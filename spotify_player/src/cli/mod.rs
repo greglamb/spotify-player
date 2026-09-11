@@ -161,12 +161,21 @@ impl ItemId {
     }
 }
 
+/// The application's version.
+///
+/// Release builds stamp the git tag into `SPOTIFY_PLAYER_VERSION` (see the CD workflow)
+/// so a fork's releases are identifiable; other builds report the crate version.
+const VERSION: &str = match option_env!("SPOTIFY_PLAYER_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub fn init_cli() -> anyhow::Result<clap::Command> {
     let default_cache_folder = config::get_cache_folder_path()?;
     let default_config_folder = config::get_config_folder_path()?;
 
     let cmd = clap::Command::new(env!("CARGO_PKG_NAME"))
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(VERSION)
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .author(env!("CARGO_PKG_AUTHORS"))
         .subcommand(commands::init_get_subcommand())

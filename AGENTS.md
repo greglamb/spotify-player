@@ -13,10 +13,12 @@ This file guides coding agents when working in this repository.
 | Module                        | Responsibility                                                              |
 | ----------------------------- | --------------------------------------------------------------------------- |
 | `main.rs`                     | Entry point; wires threads/tasks; CLI arg parsing; logging init             |
+| `log_layer.rs`                | `tracing` layers: logs-page buffer and alert popup feed                      |
 | `state/`                      | Shared app state (`Arc<State>`): UI, player data, library caches, queue     |
 | `state/model.rs`              | Core domain types: `Track`, `Album`, `Artist`, `Playlist`, `Playback`, etc. |
 | `state/player.rs`             | `PlayerState`: current playback, devices, queue, progress estimation        |
 | `state/data.rs`               | `AppData`: user library, TTL memory caches, file-cache persistence          |
+| `state/alert.rs`              | `Alert` / `AlertQueue`: warnings and errors pending user acknowledgement    |
 | `state/ui/`                   | `UIState`: page history stack, popup state, key buffer, count prefix        |
 | `client/mod.rs`               | `AppClient`: Spotify API calls, session management                          |
 | `client/request.rs`           | `ClientRequest` / `PlayerRequest` enums (async message types)               |
@@ -124,6 +126,14 @@ Keep `.github/copilot-instructions.md` and this `AGENTS.md` in sync when project
 1. Add the variant to `Command` in `command.rs` and update `Command::desc()`.
 2. Add a default keybinding in `config/keymap.rs`.
 3. Update the command table in `README.md`.
+
+## Releases (fork)
+
+Pushing a `v*.*.*` tag runs `.github/workflows/cd.yml`: it builds release binaries for five targets, attaches them to a GitHub release, then updates `Formula/spotify_player.rb` — this repository doubles as its own Homebrew tap.
+
+- Release builds stamp the tag into `SPOTIFY_PLAYER_VERSION`, which `cli/mod.rs` prefers over `CARGO_PKG_VERSION`. Leave the crate version in `Cargo.toml` matching upstream so syncs stay conflict-free.
+- The formula's `version` and `sha256` values are rewritten by `scripts/update-formula.py`; never hand-edit them. Everything else in the formula is hand-maintained.
+- `ci.yml`, `docker.yml` and `nix.yml` are disabled in this fork (`workflow_dispatch` only), so run the checks under "Verifying changes" locally before committing.
 
 ## Writing PR descriptions
 

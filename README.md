@@ -1,10 +1,18 @@
 # spotify_player
 
+> **This is a personal fork** of [aome510/spotify-player](https://github.com/aome510/spotify-player), kept in sync with upstream and carrying a few changes for my own use:
+>
+> - [Alert popups](#alerts) for warnings and errors that upstream only writes to the log, including Spotify Web API rate limiting (`429 Too Many Requests`).
+> - Its own [Homebrew tap](#homebrew-this-fork) and release binaries, built for macOS (Intel/Apple silicon), Linux (x86_64/ARM64) and Windows.
+>
+> Fork releases are tagged `v<upstream version>-gh<n>` (for example `v0.25.1-gh1`) and `spotify_player --version` reports that tag. For the upstream project, see the link above — issues with anything in this fork belong here, not there.
+
 ## Table of Contents
 
 - [Introduction](#introduction)
 - [Examples](#examples)
 - [Installation](#installation)
+  - [Homebrew (this fork)](#homebrew-this-fork)
 - [Authentication](#authentication)
   - [How authentication works](#how-authentication-works)
   - [Why you may be asked to authenticate multiple times](#why-you-may-be-asked-to-authenticate-multiple-times)
@@ -17,6 +25,7 @@
   - [Media Control](#media-control)
   - [Image](#image)
   - [Notify](#notify)
+  - [Alerts](#alerts)
   - [Mouse support](#mouse-support)
   - [Daemon](#daemon)
   - [Fuzzy search](#fuzzy-search)
@@ -55,6 +64,19 @@ Checkout [examples/README.md](https://github.com/aome510/spotify-player/blob/mas
 ## Installation
 
 By default, the application's installed binary is `spotify_player`.
+
+### Homebrew (this fork)
+
+This repository doubles as its own Homebrew tap, serving the prebuilt binaries attached to each release:
+
+```shell
+brew tap greglamb/spotify-player https://github.com/greglamb/spotify-player.git
+brew install greglamb/spotify-player/spotify_player
+```
+
+Upgrade with `brew upgrade greglamb/spotify-player/spotify_player` once a newer release is tagged, and remove the tap with `brew untap greglamb/spotify-player`.
+
+The formula installs a binary named `spotify_player`, the same name Homebrew's own `spotify_player` formula uses, so the two cannot be linked at the same time — install one or the other. The sections below describe upstream's installation methods, which all install the upstream build rather than this fork.
 
 ### Requirements
 
@@ -230,6 +252,8 @@ When a custom `client_id` is configured, `spotify-player` sends most Web API req
 
 The custom client uses no request middleware. The ncspot client stores `Retry-After` durations and retries rate-limited GET requests up to two times by default; mutation requests are never delayed or retried by the middleware. Configure the ncspot retry count with `api_rate_limit_retries`; see the [configuration documentation](https://github.com/aome510/spotify-player/blob/master/docs/config.md) for details.
 
+Rate limiting is otherwise invisible — requests are delayed or retried in the background, which looks like an unresponsive application. Every `429` therefore raises an [alert popup](#alerts) naming the throttled client (`ncspot` or `custom`), the request, and the `Retry-After` delay. A custom client's `429` is retried through ncspot, so playback usually continues; a `429` on ncspot means the shared quota is exhausted and is a good reason to [use a custom client ID](#using-a-custom-client-id). Falling back for other `4xx` responses is routine and is logged without an alert.
+
 ### Using a custom client ID
 
 Use a custom client ID to avoid competing for the shared ncspot client's rate limit. Most requests will be attributed to your own Spotify application instead. Newly registered applications use restricted default quota mode, so endpoints unavailable to the custom client transparently fall back to ncspot.
@@ -351,6 +375,25 @@ cargo install spotify_player --features notify
 ```
 
 **Note**: Notification support is limited on macOS and Windows compared to Linux.
+
+### Alerts
+
+Warnings and errors are logged rather than shown, so failures the application recovers from — a rate-limited request, a failed API call, a dropped session — can leave the UI unresponsive with no visible explanation. When `enable_alert_popup` is set (the default), such a log event also raises a dismissible **alert popup** in the middle of the screen, showing the level, source, message, and the event's details (for a `429 Too Many Requests`, the client ID whose quota is exhausted, the request, and the `Retry-After` delay).
+
+While an alert is shown:
+
+| Key            | Action                                            |
+| -------------- | ------------------------------------------------- |
+| `esc`, `enter` | dismiss the alert and show the next pending one   |
+| `a`            | dismiss all pending alerts                        |
+| `y`            | copy the alert to the clipboard                   |
+| `Y`            | copy all pending alerts to the clipboard          |
+
+Any other key is passed through to the application, so playback and navigation keep working while an alert is up.
+
+Repeats of the same event are coalesced into a single alert with a count instead of stacking up, and at most 20 alerts are kept. Dismissed alerts are not lost: every alert comes from a log event, so it remains on the logs page (`g o`) and in the [log file](#logging).
+
+Use `alert_popup_min_level` to only be alerted about errors (`Error`) instead of warnings and errors (`Warn`, the default), or `enable_alert_popup = false` to turn the popup off entirely. Alerts follow the logging setup, so `RUST_LOG=off` also disables them.
 
 ### Mouse support
 
