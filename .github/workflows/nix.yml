@@ -1,15 +1,9 @@
 name: Build on Cargo.lock Change
 
+# Disabled in this fork: kept for upstream parity, but never runs automatically.
+# Trigger manually from the Actions tab if you ever need it.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "spotify_player/Cargo.lock"
-  push:
-    branches:
-      - "master"
-    paths:
-      - "spotify_player/Cargo.lock"
+  workflow_dispatch:
 
 jobs:
   build:

@@ -1,10 +1,9 @@
 name: CI
 
+# Disabled in this fork: kept for upstream parity, but never runs automatically.
+# Trigger manually from the Actions tab if you ever need it.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: master
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

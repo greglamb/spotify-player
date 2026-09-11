@@ -1,9 +1,9 @@
 name: Docker Deploy
 
+# Disabled in this fork: kept for upstream parity, but never runs automatically.
+# Trigger manually from the Actions tab if you ever need it.
 on:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
 
 jobs:
   docker:
