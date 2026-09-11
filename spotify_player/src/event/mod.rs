@@ -9,13 +9,14 @@ use crate::{
     config,
     key::{Key, KeySequence},
     state::{
-        ActionListItem, Album, AlbumId, Artist, ArtistFocusState, ArtistId, ArtistPopupAction,
-        BrowsePageUIState, ConfirmableAction, Context, ContextId, ContextPageType,
-        ContextPageUIState, DataReadGuard, Focusable, Id, Item, ItemId, LibraryFocusState,
-        LibraryPageUIState, PageState, PageType, PlayableId, Playback, PlaylistCreateCurrentField,
-        PlaylistFolderItem, PlaylistId, PlaylistPopupAction, PopupState, SearchFocusState,
-        SearchPageUIState, SharedState, ShowId, Track, TrackId, TrackOrder, TracksId, UIStateGuard,
-        USER_LIKED_TRACKS_ID, USER_RECENTLY_PLAYED_TRACKS_ID, USER_TOP_TRACKS_ID,
+        ActionListItem, Album, AlbumId, Alert, Artist, ArtistFocusState, ArtistId,
+        ArtistPopupAction, BrowsePageUIState, ConfirmableAction, Context, ContextId,
+        ContextPageType, ContextPageUIState, DataReadGuard, Focusable, Id, Item, ItemId,
+        LibraryFocusState, LibraryPageUIState, PageState, PageType, PlayableId, Playback,
+        PlaylistCreateCurrentField, PlaylistFolderItem, PlaylistId, PlaylistPopupAction,
+        PopupState, SearchFocusState, SearchPageUIState, SharedState, ShowId, Track, TrackId,
+        TrackOrder, TracksId, UIStateGuard, USER_LIKED_TRACKS_ID, USER_RECENTLY_PLAYED_TRACKS_ID,
+        USER_TOP_TRACKS_ID,
     },
     ui::{single_line_input::LineInput, Orientation},
     utils::parse_uri,
@@ -142,7 +143,9 @@ fn handle_key_event(
     );
     let count = ui.count_prefix;
     let handled = {
-        if ui.popup.is_none() {
+        if handle_key_sequence_for_alert(&key_sequence, state) {
+            true
+        } else if ui.popup.is_none() {
             page::handle_key_sequence_for_page(&key_sequence, client_pub, state, &mut ui)?
         } else {
             popup::handle_key_sequence_for_popup(&key_sequence, client_pub, state, &mut ui)?
@@ -193,6 +196,45 @@ fn handle_key_event(
         }
     }
     Ok(())
+}
+
+/// Handle a key sequence for the alert popup.
+///
+/// Only the popup's own keys are consumed; any other key falls through to the
+/// page/popup handlers so playback and navigation keep working while an alert is shown.
+fn handle_key_sequence_for_alert(key_sequence: &KeySequence, state: &SharedState) -> bool {
+    let [Key::None(key)] = key_sequence.keys.as_slice() else {
+        return false;
+    };
+
+    // no logging while holding the alerts lock: the alert log layer would deadlock on itself
+    let copied_text = {
+        let mut alerts = state.alerts.lock();
+        if alerts.is_empty() {
+            return false;
+        }
+
+        match key {
+            KeyCode::Esc | KeyCode::Enter => {
+                alerts.dismiss_current();
+                None
+            }
+            KeyCode::Char('a') => {
+                alerts.dismiss_all();
+                None
+            }
+            KeyCode::Char('y') => alerts.current().map(Alert::to_text),
+            KeyCode::Char('Y') => Some(alerts.to_text()),
+            _ => return false,
+        }
+    };
+
+    if let Some(text) = copied_text {
+        if let Err(err) = execute_copy_command(text) {
+            tracing::error!("Failed to copy the alert to clipboard: {err:#}");
+        }
+    }
+    true
 }
 
 pub fn handle_action_in_context(

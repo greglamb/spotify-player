@@ -266,12 +266,25 @@ impl WebApiClient {
     }
 
     fn log_fallback(method: &str, url: &str, status: reqwest::StatusCode) {
-        tracing::warn!(
-            method,
-            url,
-            %status,
-            "Custom Spotify Web API request failed; retrying with ncspot client"
-        );
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            tracing::warn!(
+                client = "custom",
+                method,
+                url,
+                %status,
+                hint = "the custom client ID's quota is exhausted; the request is retried with the ncspot client ID",
+                "Spotify Web API rate limit encountered"
+            );
+        } else {
+            // falling back on other 4xx responses is expected for endpoints
+            // a custom client ID is not allowed to access
+            tracing::info!(
+                method,
+                url,
+                %status,
+                "Custom Spotify Web API request failed; retrying with ncspot client"
+            );
+        }
     }
 }
 
@@ -408,7 +421,9 @@ mod tests {
             config.clone(),
         );
         let client = if with_middleware {
-            client.with_middleware(SpotifyApiMiddleware::new(&config.api_base_url, 1).unwrap())
+            client.with_middleware(
+                SpotifyApiMiddleware::new(&config.api_base_url, 1, "ncspot").unwrap(),
+            )
         } else {
             client
         };

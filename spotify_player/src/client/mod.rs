@@ -120,6 +120,7 @@ pub fn new_api_client() -> Result<WebApiClient> {
         let middleware = SpotifyApiMiddleware::new(
             &config.api_base_url,
             configs.app_config.api_rate_limit_retries,
+            "ncspot",
         )?;
         let client = rspotify::AuthCodePkceSpotify::with_config(
             rspotify::Credentials { id, secret: None },
@@ -146,6 +147,7 @@ pub fn new_api_client() -> Result<WebApiClient> {
     let fallback_middleware = SpotifyApiMiddleware::new(
         &fallback_config.api_base_url,
         configs.app_config.api_rate_limit_retries,
+        "ncspot",
     )?;
     let fallback = rspotify::AuthCodePkceSpotify::with_config(
         rspotify::Credentials {

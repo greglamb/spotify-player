@@ -27,6 +27,7 @@ use crate::config::apply_config_override;
 fn init_logging(
     log_folder: &std::path::Path,
     log_buffer: Arc<Mutex<VecDeque<String>>>,
+    alerts: Arc<Mutex<state::AlertQueue>>,
 ) -> Result<()> {
     if std::env::var_os("RUST_LOG").is_some_and(|x| x == "off") {
         // Don't create log files if logging is disabled.
@@ -55,10 +56,16 @@ fn init_logging(
 
     let buffer_layer = crate::log_layer::BufferLayer::new(log_buffer, 1000);
 
+    let app_config = &config::get_config().app_config;
+    let alert_layer = app_config
+        .enable_alert_popup
+        .then(|| crate::log_layer::AlertLayer::new(alerts, app_config.alert_popup_min_level));
+
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::from_default_env())
         .with(fmt_layer)
         .with(buffer_layer)
+        .with(alert_layer)
         .init();
 
     // initialize the application's panic backtrace
@@ -287,7 +294,10 @@ fn main() -> Result<()> {
             let log_buffer: Arc<Mutex<VecDeque<String>>> =
                 Arc::new(Mutex::new(VecDeque::with_capacity(1000)));
 
-            init_logging(log_folder, log_buffer.clone())
+            let alerts: Arc<Mutex<state::AlertQueue>> =
+                Arc::new(Mutex::new(state::AlertQueue::default()));
+
+            init_logging(log_folder, log_buffer.clone(), alerts.clone())
                 .context("failed to initialize application's logging")?;
 
             // log the application's configurations
@@ -317,7 +327,7 @@ fn main() -> Result<()> {
                 is_daemon = false;
             }
 
-            let state = std::sync::Arc::new(state::State::new(is_daemon, log_buffer));
+            let state = std::sync::Arc::new(state::State::new(is_daemon, log_buffer, alerts));
             start_app(&state)
         }
         Some((cmd, args)) => cli::handle_cli_subcommand(cmd, args),

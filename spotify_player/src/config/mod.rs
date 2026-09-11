@@ -62,6 +62,11 @@ pub struct AppConfig {
 
     pub log_folder: Option<PathBuf>,
 
+    /// Show a dismissible popup for warnings/errors that are otherwise only logged.
+    pub enable_alert_popup: bool,
+    /// Minimum severity of a log event that raises an alert popup.
+    pub alert_popup_min_level: AlertLevel,
+
     pub player_event_hook_command: Option<Command>,
 
     pub playback_format: String,
@@ -182,6 +187,32 @@ pub enum ProgressBarPosition {
     Right,
 }
 config_parser_impl!(ProgressBarPosition);
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub enum AlertLevel {
+    Error,
+    Warn,
+}
+config_parser_impl!(AlertLevel);
+
+impl AlertLevel {
+    /// Severity of the level, where a larger value is more severe.
+    pub fn severity(self) -> u8 {
+        match self {
+            Self::Error => 2,
+            Self::Warn => 1,
+        }
+    }
+}
+
+impl std::fmt::Display for AlertLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Error => write!(f, "ERROR"),
+            Self::Warn => write!(f, "WARN"),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, ConfigParse, Clone)]
 pub struct Command {
@@ -317,6 +348,9 @@ impl Default for AppConfig {
             login_redirect_uri: "http://127.0.0.1:8989/login".to_string(),
 
             log_folder: None,
+
+            enable_alert_popup: true,
+            alert_popup_min_level: AlertLevel::Warn,
 
             tracks_playback_limit: 50,
             top_tracks_limit: 100,
@@ -569,4 +603,39 @@ pub fn apply_config_override(config: &mut AppConfig, key: &str, value: &str) -> 
     *config = config_value.try_into()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AlertLevel, AppConfig, ConfigParser};
+
+    #[test]
+    fn parses_the_alert_options() {
+        let mut config = AppConfig::default();
+        config
+            .parse(
+                toml::from_str::<toml::Value>(
+                    "enable_alert_popup = false\nalert_popup_min_level = \"Error\"",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert!(!config.enable_alert_popup);
+        assert_eq!(config.alert_popup_min_level, AlertLevel::Error);
+    }
+
+    #[test]
+    fn parses_the_example_config_file() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crate folder has a parent")
+            .join("examples/app.toml");
+        let content = std::fs::read_to_string(path).expect("read examples/app.toml");
+
+        let mut config = AppConfig::default();
+        config
+            .parse(toml::from_str::<toml::Value>(&content).unwrap())
+            .expect("examples/app.toml matches the application's config options");
+    }
 }

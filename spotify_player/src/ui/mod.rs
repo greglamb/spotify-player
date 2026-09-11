@@ -13,8 +13,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, BorderType, Borders, Cell, Gauge, LineGauge, List, ListItem, ListState, Paragraph,
-        Row, Table, TableState, Wrap,
+        Block, BorderType, Borders, Cell, Clear, Gauge, LineGauge, List, ListItem, ListState,
+        Paragraph, Row, Table, TableState, Wrap,
     },
     Frame,
 };
@@ -137,18 +137,23 @@ fn clean_up(mut terminal: Terminal) -> Result<()> {
 
 /// Render the application
 fn render_application(frame: &mut Frame, state: &SharedState, ui: &mut UIStateGuard, rect: Rect) {
-    // rendering order: playback window -> shortcut help popup -> other popups -> main layout
+    // rendering order: playback window -> shortcut help popup -> other popups -> main layout -> alert popup
 
     // render playback window before other popups and windows to ensure nothing is rendered on top
     // of the playback window, which is to avoid "duplicated images" issue
     // See: https://github.com/aome510/spotify-player/issues/498
     let rect = playback::render_playback_window(frame, state, ui, rect);
+    let content_rect = rect;
 
     let rect = popup::render_shortcut_help_popup(frame, ui, rect);
 
     let (rect, is_active) = popup::render_popup(frame, state, ui, rect);
 
     render_main_layout(is_active, frame, state, ui, rect);
+
+    // render the alert popup last so it appears on top of the main layout,
+    // but within the area left by the playback window to avoid cover image artifacts
+    popup::render_alert_popup(frame, state, ui, content_rect);
 }
 
 /// Render the application's main layout

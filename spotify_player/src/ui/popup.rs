@@ -1,14 +1,18 @@
 use crate::{command::Command, utils::filtered_items_from_query};
 
 use super::{
-    config, utils, utils::construct_and_render_block, Borders, Cell, Constraint, Frame, Layout,
-    Paragraph, PlaylistCreateCurrentField, PlaylistPopupAction, PopupState, Rect, Row, SharedState,
-    Table, UIStateGuard,
+    config, utils, utils::construct_and_render_block, Block, Borders, Cell, Clear, Constraint,
+    Frame, Layout, Line, Paragraph, PlaylistCreateCurrentField, PlaylistPopupAction, PopupState,
+    Rect, Row, SharedState, Span, Style, Table, UIStateGuard, Wrap,
 };
 
 const SHORTCUT_TABLE_N_COLUMNS: usize = 3;
 const SHORTCUT_TABLE_CONSTRAINS: [Constraint; SHORTCUT_TABLE_N_COLUMNS] =
     [Constraint::Ratio(1, 3); 3];
+
+const MIN_ALERT_POPUP_WIDTH: u16 = 24;
+const MIN_ALERT_POPUP_HEIGHT: u16 = 5;
+const MAX_ALERT_POPUP_WIDTH: u16 = 80;
 
 /// Render a popup (if any) to handle a command or show additional information
 /// depending on the current popup state.
@@ -225,6 +229,104 @@ pub fn render_popup(
     }
 }
 
+/// Render the alert popup showing the oldest pending alert, if any.
+///
+/// Alerts are raised from log events at any time, so the popup is rendered last
+/// (on top of the main layout) and handles its own keys in `event::handle_key_event`.
+pub fn render_alert_popup(frame: &mut Frame, state: &SharedState, ui: &UIStateGuard, rect: Rect) {
+    // copy the alert out before rendering: logging while holding the lock deadlocks the alert layer
+    let (alert, n_alerts) = {
+        let alerts = state.alerts.lock();
+        match alerts.current() {
+            Some(alert) => (alert.clone(), alerts.len()),
+            None => return,
+        }
+    };
+
+    if rect.width < MIN_ALERT_POPUP_WIDTH || rect.height < MIN_ALERT_POPUP_HEIGHT {
+        return;
+    }
+
+    let level_style = match alert.level {
+        config::AlertLevel::Error => Style::default().fg(ratatui::style::Color::Red),
+        config::AlertLevel::Warn => Style::default().fg(ratatui::style::Color::Yellow),
+    };
+    let dim_style = Style::default().add_modifier(ratatui::style::Modifier::DIM);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(format!("{} ", alert.level), level_style),
+            Span::styled(
+                format!("{} {}", alert.last_seen.format("%H:%M:%S"), alert.target),
+                dim_style,
+            ),
+        ]),
+        Line::raw(alert.message.clone()),
+    ];
+    lines.extend(
+        alert
+            .fields
+            .iter()
+            .map(|(name, value)| Line::raw(format!("  {name}: {value}"))),
+    );
+    if alert.count > 1 {
+        lines.push(Line::styled(
+            format!(
+                "  (seen {} times since {})",
+                alert.count,
+                alert.first_seen.format("%H:%M:%S")
+            ),
+            dim_style,
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "[esc] dismiss  [a] dismiss all  [y] copy  [Y] copy all  [g o] logs",
+        dim_style,
+    ));
+
+    let area = alert_popup_area(rect, &lines);
+
+    let title = if n_alerts > 1 {
+        format!("Alert (1/{n_alerts})")
+    } else {
+        "Alert".to_string()
+    };
+
+    // `Clear` resets the cells to the terminal's default style, so re-apply the app's style
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(ui.theme.app()), area);
+
+    let inner_rect = construct_and_render_block(&title, &ui.theme, Borders::ALL, frame, area);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner_rect);
+}
+
+/// The centered area of `rect` that fits the alert popup's `lines`,
+/// including the surrounding block's borders.
+fn alert_popup_area(rect: Rect, lines: &[Line]) -> Rect {
+    let width = rect
+        .width
+        .saturating_sub(4)
+        .clamp(MIN_ALERT_POPUP_WIDTH, MAX_ALERT_POPUP_WIDTH);
+    // the block's left/right borders reduce the width available for wrapping
+    let inner_width = std::cmp::max(width.saturating_sub(2), 1) as usize;
+    let n_rows: usize = lines
+        .iter()
+        .map(|line| std::cmp::max(line.width(), 1).div_ceil(inner_width))
+        .sum();
+    let height = std::cmp::min(
+        u16::try_from(n_rows).unwrap_or(u16::MAX).saturating_add(2),
+        rect.height,
+    );
+
+    Rect {
+        x: rect.x + (rect.width - width) / 2,
+        y: rect.y + (rect.height - height) / 2,
+        width,
+        height,
+    }
+}
+
 /// A helper function to render a list popup
 fn render_list_popup(
     frame: &mut Frame,
@@ -298,5 +400,47 @@ pub fn render_shortcut_help_popup(frame: &mut Frame, ui: &mut UIStateGuard, rect
 
         frame.render_widget(help_table, rect);
         chunks[0]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{alert_popup_area, Line, Rect, MAX_ALERT_POPUP_WIDTH};
+
+    #[test]
+    fn centers_the_alert_popup() {
+        let rect = Rect::new(0, 0, 100, 40);
+        let lines = vec![Line::raw("rate limited"), Line::raw("retry_after: 30")];
+
+        let area = alert_popup_area(rect, &lines);
+
+        assert_eq!(area.width, MAX_ALERT_POPUP_WIDTH);
+        assert_eq!(area.height, 4); // 2 lines + top/bottom borders
+        assert_eq!(area.x, (rect.width - area.width) / 2);
+        assert_eq!(area.y, (rect.height - area.height) / 2);
+    }
+
+    #[test]
+    fn accounts_for_wrapped_lines() {
+        let rect = Rect::new(0, 0, 100, 40);
+        // 3 rows once wrapped at the popup's inner width
+        let lines = vec![Line::raw(
+            "x".repeat(usize::from(MAX_ALERT_POPUP_WIDTH - 2) * 3),
+        )];
+
+        assert_eq!(alert_popup_area(rect, &lines).height, 5);
+    }
+
+    #[test]
+    fn fits_inside_a_small_area() {
+        let rect = Rect::new(3, 2, 30, 6);
+        let lines = (0..20).map(|_| Line::raw("failure")).collect::<Vec<_>>();
+
+        let area = alert_popup_area(rect, &lines);
+
+        assert!(area.width <= rect.width);
+        assert_eq!(area.height, rect.height);
+        assert!(area.x >= rect.x && area.x + area.width <= rect.x + rect.width);
+        assert!(area.y >= rect.y && area.y + area.height <= rect.y + rect.height);
     }
 }

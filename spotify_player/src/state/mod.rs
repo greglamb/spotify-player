@@ -1,3 +1,4 @@
+mod alert;
 mod constant;
 mod data;
 mod model;
@@ -7,6 +8,7 @@ mod ui;
 
 use std::{collections::VecDeque, sync::Arc};
 
+pub use alert::*;
 pub use constant::*;
 pub use data::*;
 pub use model::*;
@@ -37,10 +39,17 @@ pub struct State {
     pub vis_bands: Option<Arc<Mutex<crate::ui::streaming::VisBands>>>,
 
     pub logs: Arc<Mutex<VecDeque<String>>>,
+
+    /// Warnings/errors pending acknowledgement in the alert popup.
+    pub alerts: Arc<Mutex<AlertQueue>>,
 }
 
 impl State {
-    pub fn new(is_daemon: bool, log_buffer: Arc<Mutex<VecDeque<String>>>) -> Self {
+    pub fn new(
+        is_daemon: bool,
+        log_buffer: Arc<Mutex<VecDeque<String>>>,
+        alerts: Arc<Mutex<AlertQueue>>,
+    ) -> Self {
         let mut ui = UIState::default();
         let configs = config::get_config();
 
@@ -66,6 +75,7 @@ impl State {
             },
 
             logs: log_buffer,
+            alerts,
         }
     }
 

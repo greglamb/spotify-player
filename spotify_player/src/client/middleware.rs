@@ -13,6 +13,10 @@ use tokio::{
 
 const GET_DEDUPLICATION_WINDOW: Duration = Duration::from_secs(1);
 
+/// Actionable context attached to rate-limit warnings, shown in the alert popup.
+const RATE_LIMIT_HINT: &str = "requests are paused until the Retry-After delay elapses; \
+     configuring `client_id` in app.toml gives the app its own Spotify API quota";
+
 #[derive(Clone, Debug)]
 struct CachedResponse {
     status: StatusCode,
@@ -205,13 +209,21 @@ impl SpotifyApiRequestManager {
 #[derive(Clone, Debug)]
 pub(super) struct SpotifyApiMiddleware {
     api_base_url: Url,
+    /// Name of the Spotify application (client ID) the requests are attributed to,
+    /// so a rate-limit warning names the client whose quota is exhausted.
+    client: String,
     requests: SpotifyApiRequestManager,
 }
 
 impl SpotifyApiMiddleware {
-    pub(super) fn new(api_base_url: &str, max_retries: usize) -> anyhow::Result<Self> {
+    pub(super) fn new(
+        api_base_url: &str,
+        max_retries: usize,
+        client: &str,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             api_base_url: Url::parse(api_base_url)?,
+            client: client.to_string(),
             requests: SpotifyApiRequestManager::new(max_retries),
         })
     }
@@ -259,15 +271,19 @@ impl SpotifyApiMiddleware {
         if let Some(retry_after) = Self::retry_after(response.headers()) {
             self.requests.store_retry_after(retry_after).await;
             tracing::warn!(
+                client = %self.client,
                 %method,
                 %url,
                 retry_after_secs = retry_after.as_secs(),
+                hint = RATE_LIMIT_HINT,
                 "Spotify Web API rate limit encountered"
             );
         } else {
             tracing::warn!(
+                client = %self.client,
                 %method,
                 %url,
+                hint = RATE_LIMIT_HINT,
                 "Spotify Web API rate limit encountered without a valid Retry-After duration"
             );
         }
@@ -416,7 +432,7 @@ mod tests {
     }
 
     fn middleware() -> SpotifyApiMiddleware {
-        SpotifyApiMiddleware::new("https://api.spotify.com/v1", 2).unwrap()
+        SpotifyApiMiddleware::new("https://api.spotify.com/v1", 2, "ncspot").unwrap()
     }
 
     #[test]
@@ -522,7 +538,7 @@ mod tests {
             .await;
 
         let client = ClientBuilder::new(reqwest::Client::new())
-            .with(SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2).unwrap())
+            .with(SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2, "ncspot").unwrap())
             .build();
         let response = client
             .get(format!("{}/v1/me", server.uri()))
@@ -546,7 +562,7 @@ mod tests {
             .await;
 
         let client = ClientBuilder::new(reqwest::Client::new())
-            .with(SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2).unwrap())
+            .with(SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2, "ncspot").unwrap())
             .build();
         let url = format!("{}/v1/me", server.uri());
 
@@ -568,7 +584,7 @@ mod tests {
             .await;
 
         let client = ClientBuilder::new(reqwest::Client::new())
-            .with(SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2).unwrap())
+            .with(SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2, "ncspot").unwrap())
             .build();
         let first = client
             .get(format!("{}/v1/search?type=track&q=test", server.uri()))
@@ -596,7 +612,7 @@ mod tests {
             .await;
 
         let client = ClientBuilder::new(reqwest::Client::new())
-            .with(SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2).unwrap())
+            .with(SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2, "ncspot").unwrap())
             .build();
         let response = client
             .post(format!("{}/v1/playlists", server.uri()))
