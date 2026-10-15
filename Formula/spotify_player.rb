@@ -7,30 +7,30 @@
 class SpotifyPlayer < Formula
   desc "Terminal Spotify player (greglamb fork)"
   homepage "https://github.com/greglamb/spotify-player"
-  version "0.25.1-gh1"
+  version "0.25.1-gh2"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-aarch64-apple-darwin.tar.gz"
-      sha256 "3583f960d0c2a14c9ace65fcd0eebfb7d357ff50ac2cafbb3972ad8a7655be89"
+      sha256 "b21ebf1d91802d0bf5065ba4ac3d614d96e3777462ce952b77cfc9acc5762efd"
     end
 
     on_intel do
       url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-x86_64-apple-darwin.tar.gz"
-      sha256 "8540608d085fad3660bed493ed5541bf17fd5a3eb9e2fa9da1047df6b28aa366"
+      sha256 "628317d9554497a728fc470040b6c075f2bd81c0de9f316f4f32ff6df2634ee8"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "914495da357634abdb4fde9254d5677cffca1887f18d5f5595dc6b7615d6184b"
+      sha256 "3e2a79189517ba5e4588c050d62549d8575015779f2f207309d8781e24de7fef"
     end
 
     on_intel do
       url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "8563fa6a3bfb0ee1c11f7d61c476951ec35d2233170ea80bf01ddb808c9706fb"
+      sha256 "5c7e83118d04deade16aa1103d393411800d61d28485c54270c6f0a8f2302ec6"
     end
   end
 
