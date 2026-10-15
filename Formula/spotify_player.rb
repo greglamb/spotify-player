@@ -7,7 +7,7 @@
 class SpotifyPlayer < Formula
   desc "Terminal Spotify player (greglamb fork)"
   homepage "https://github.com/greglamb/spotify-player"
-  version "0.25.1-gh2"
+  version "0.25.1-gh3"
   license "MIT"
 
   on_macos do
@@ -15,18 +15,18 @@ class SpotifyPlayer < Formula
     depends_on arch: :arm64
 
     url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-aarch64-apple-darwin.tar.gz"
-    sha256 "b21ebf1d91802d0bf5065ba4ac3d614d96e3777462ce952b77cfc9acc5762efd"
+    sha256 "255e24624d41cf2908d3a5c8c16d522e95621a57431ffd211c3c585ad8fe7aec"
   end
 
   on_linux do
     on_arm do
       url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "3e2a79189517ba5e4588c050d62549d8575015779f2f207309d8781e24de7fef"
+      sha256 "142b98d94c98a557754c2628951812a2ee822094705ddecd8f80efe418a6a59e"
     end
 
     on_intel do
       url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "5c7e83118d04deade16aa1103d393411800d61d28485c54270c6f0a8f2302ec6"
+      sha256 "b30c211ca85e78e77cf5dd21b4f1c269ca872b60ca6b103250027894442d5d5d"
     end
   end
 
