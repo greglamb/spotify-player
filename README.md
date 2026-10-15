@@ -3,7 +3,7 @@
 > **This is a personal fork** of [aome510/spotify-player](https://github.com/aome510/spotify-player), kept in sync with upstream and carrying a few changes for my own use:
 >
 > - [Alert popups](#alerts) for warnings and errors that upstream only writes to the log, including Spotify Web API rate limiting (`429 Too Many Requests`).
-> - Its own [Homebrew tap](#homebrew-this-fork) and release binaries, built for macOS (Intel/Apple silicon), Linux (x86_64/ARM64) and Windows.
+> - Its own [Homebrew tap](#homebrew-this-fork) and release binaries, built for macOS (Apple silicon), Linux (x86_64/ARM64) and Windows.
 >
 > Fork releases are tagged `v<upstream version>-gh<n>` (for example `v0.25.1-gh1`) and `spotify_player --version` reports that tag. For the upstream project, see the link above — issues with anything in this fork belong here, not there.
 
@@ -75,6 +75,8 @@ brew install greglamb/spotify-player/spotify_player
 ```
 
 Upgrade with `brew upgrade greglamb/spotify-player/spotify_player` once a newer release is tagged, and remove the tap with `brew untap greglamb/spotify-player`.
+
+The binaries are built with `image`, `notify` and `fzf` on top of the default features, so cover art, desktop notifications and fuzzy search all work. macOS builds are published for Apple silicon only; Linux builds cover x86_64 and ARM64.
 
 The formula installs a binary named `spotify_player`, the same name Homebrew's own `spotify_player` formula uses, so the two cannot be linked at the same time — install one or the other. The sections below describe upstream's installation methods, which all install the upstream build rather than this fork.
 

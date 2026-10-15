@@ -11,15 +11,11 @@ class SpotifyPlayer < Formula
   license "MIT"
 
   on_macos do
-    on_arm do
-      url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-aarch64-apple-darwin.tar.gz"
-      sha256 "b21ebf1d91802d0bf5065ba4ac3d614d96e3777462ce952b77cfc9acc5762efd"
-    end
+    # the fork publishes Apple silicon binaries only
+    depends_on arch: :arm64
 
-    on_intel do
-      url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-x86_64-apple-darwin.tar.gz"
-      sha256 "628317d9554497a728fc470040b6c075f2bd81c0de9f316f4f32ff6df2634ee8"
-    end
+    url "https://github.com/greglamb/spotify-player/releases/download/v#{version}/spotify_player-aarch64-apple-darwin.tar.gz"
+    sha256 "b21ebf1d91802d0bf5065ba4ac3d614d96e3777462ce952b77cfc9acc5762efd"
   end
 
   on_linux do

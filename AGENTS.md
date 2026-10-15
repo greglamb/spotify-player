@@ -131,7 +131,7 @@ Keep `.github/copilot-instructions.md` and this `AGENTS.md` in sync when project
 
 ## Releases (fork)
 
-Pushing a `v*.*.*` tag runs `.github/workflows/cd.yml`: it builds release binaries for five targets, attaches them to a GitHub release, then updates `Formula/spotify_player.rb` — this repository doubles as its own Homebrew tap.
+Pushing a `v*.*.*` tag runs `.github/workflows/cd.yml`: it builds release binaries for four targets (Apple silicon macOS, x86_64/ARM64 Linux, x86_64 Windows) with `image,notify,fzf` on top of the default features, attaches them to a GitHub release, then updates `Formula/spotify_player.rb` — this repository doubles as its own Homebrew tap.
 
 - Release builds stamp the tag into `SPOTIFY_PLAYER_VERSION`, which `cli/mod.rs` prefers over `CARGO_PKG_VERSION`. Leave the crate version in `Cargo.toml` matching upstream so syncs stay conflict-free.
 - The formula's `version` and `sha256` values are rewritten by `scripts/update-formula.py`; never hand-edit them. Everything else in the formula is hand-maintained.
