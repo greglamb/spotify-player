@@ -64,8 +64,10 @@ Event/UI threads never call async functions directly. They send a `ClientRequest
 | `notify`                                                                                                                                | Desktop notifications                                    |
 | `daemon`                                                                                                                                | Daemonize mode (implies `streaming`)                     |
 | `fzf`                                                                                                                                   | Fuzzy search                                             |
+| `rustls-tls`                                                                                                                            | HTTP client TLS via rustls + platform verifier (default) |
+| `native-tls`                                                                                                                            | HTTP client TLS via the system library (openssl, …)      |
 
-Default: `rodio-backend` + `media-control`. Gate feature-specific code with `#[cfg(feature = "...")]`.
+Default: `rodio-backend` + `media-control` + `rustls-tls`. Gate feature-specific code with `#[cfg(feature = "...")]`.
 
 ## Verifying changes
 
