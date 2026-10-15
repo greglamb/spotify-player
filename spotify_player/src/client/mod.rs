@@ -200,6 +200,8 @@ impl AppClient {
                 // a retry logic is implemented to ensure the application's state is properly initialized
                 let max_retries = 3;
                 for i in 0..max_retries {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
                     if let Err(err) = client.retrieve_current_playback(&state, false).await {
                         tracing::error!("Failed to retrieve current playback: {err:#}");
                         return;
@@ -207,6 +209,7 @@ impl AppClient {
 
                     // if playback exists, don't connect to a new device
                     if state.player.read().playback.is_some() {
+                        tracing::info!("Playback already exists, skipping device connection.");
                         continue;
                     }
 
@@ -246,8 +249,6 @@ impl AppClient {
                             break;
                         }
                     }
-
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
         });
