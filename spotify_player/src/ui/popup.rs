@@ -391,10 +391,11 @@ pub fn render_alert_popup(frame: &mut Frame, state: &SharedState, ui: &UIStateGu
     );
     let area = alert_popup_area(rect, &lines, 1);
 
-    let title = if n_alerts > 1 {
-        format!("Alert (1/{n_alerts})")
-    } else {
-        "Alert".to_string()
+    let title = match (n_alerts > 1, alert_popup_is_truncated(area, &lines)) {
+        (true, true) => format!("Alert (1/{n_alerts}, truncated)"),
+        (true, false) => format!("Alert (1/{n_alerts})"),
+        (false, true) => "Alert (truncated)".to_string(),
+        (false, false) => "Alert".to_string(),
     };
 
     // `Clear` resets the cells to the terminal's default style, so re-apply the app's style
@@ -405,6 +406,21 @@ pub fn render_alert_popup(frame: &mut Frame, state: &SharedState, ui: &UIStateGu
     let chunks = Layout::vertical([Constraint::Fill(0), Constraint::Length(1)]).split(inner_rect);
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[0]);
     frame.render_widget(Paragraph::new(keys), chunks[1]);
+}
+
+/// Whether `area` is too small to show all of the alert popup's `lines`.
+///
+/// The message is cut off rather than scrolled, so the popup says as much in its title.
+fn alert_popup_is_truncated(area: Rect, lines: &[Line]) -> bool {
+    let width = usize::from(area.width.saturating_sub(2));
+    // the block's borders and the row reserved for the keys
+    let rows = usize::from(area.height.saturating_sub(3));
+
+    lines
+        .iter()
+        .map(|line| wrapped_rows(line, width))
+        .sum::<usize>()
+        > rows
 }
 
 /// The number of rows `line` takes up once wrapped at `width`.
@@ -547,8 +563,9 @@ pub fn render_shortcut_help_popup(frame: &mut Frame, ui: &mut UIStateGuard, rect
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_popup_area, command_palette_area, Line, Rect, MAX_ALERT_POPUP_WIDTH,
-        MAX_PALETTE_POPUP_WIDTH, MIN_PALETTE_POPUP_HEIGHT, MIN_PALETTE_POPUP_WIDTH,
+        alert_popup_area, alert_popup_is_truncated, command_palette_area, Line, Rect,
+        MAX_ALERT_POPUP_WIDTH, MAX_PALETTE_POPUP_WIDTH, MIN_PALETTE_POPUP_HEIGHT,
+        MIN_PALETTE_POPUP_WIDTH,
     };
 
     #[test]
@@ -616,6 +633,23 @@ mod tests {
 
         // 4 wrapped rows, the reserved row for the keys, and the two borders
         assert_eq!(alert_popup_area(rect, &lines, 1).height, 7);
+    }
+
+    #[test]
+    fn reports_a_truncated_alert_popup() {
+        let lines = (0..20).map(|_| Line::raw("failure")).collect::<Vec<_>>();
+
+        let small = Rect::new(3, 2, 30, 6);
+        assert!(alert_popup_is_truncated(
+            alert_popup_area(small, &lines, 1),
+            &lines
+        ));
+
+        let large = Rect::new(0, 0, 100, 40);
+        assert!(!alert_popup_is_truncated(
+            alert_popup_area(large, &lines, 1),
+            &lines
+        ));
     }
 
     #[test]
