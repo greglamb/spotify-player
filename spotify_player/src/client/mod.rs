@@ -116,6 +116,10 @@ pub fn new_api_client() -> Result<WebApiClient> {
     let primary_cache_file = format!("{id}_token.json");
 
     if id == auth::NCSPOT_CLIENT_ID {
+        tracing::warn!(
+            hint = "set `client_id` in app.toml to use your own Spotify API quota",
+            "No custom client ID is configured; all Spotify Web API requests use the shared ncspot client ID"
+        );
         let config = build_config(&primary_cache_file);
         let middleware = SpotifyApiMiddleware::new(
             &config.api_base_url,
@@ -136,11 +140,12 @@ pub fn new_api_client() -> Result<WebApiClient> {
         %id,
         "Using custom Spotify Web API client with ncspot fallback"
     );
-    let primary = rspotify::AuthCodePkceSpotify::with_config(
-        rspotify::Credentials { id, secret: None },
-        build_oauth(configs.app_config.login_redirect_uri.clone()),
-        build_config(&primary_cache_file),
-    );
+    let primary_config = build_config(&primary_cache_file);
+    let primary_middleware = SpotifyApiMiddleware::new(
+        &primary_config.api_base_url,
+        configs.app_config.api_rate_limit_retries,
+        "custom",
+    )?;
 
     let fallback_cache_file = format!("{}_token.json", auth::NCSPOT_CLIENT_ID);
     let fallback_config = build_config(&fallback_cache_file);
@@ -149,6 +154,16 @@ pub fn new_api_client() -> Result<WebApiClient> {
         configs.app_config.api_rate_limit_retries,
         "ncspot",
     )?;
+
+    let primary_requests = primary_middleware.requests();
+    let fallback_requests = fallback_middleware.requests();
+
+    let primary = rspotify::AuthCodePkceSpotify::with_config(
+        rspotify::Credentials { id, secret: None },
+        build_oauth(configs.app_config.login_redirect_uri.clone()),
+        primary_config,
+    )
+    .with_middleware(primary_middleware.with_peer(fallback_requests.clone()));
     let fallback = rspotify::AuthCodePkceSpotify::with_config(
         rspotify::Credentials {
             id: auth::NCSPOT_CLIENT_ID.to_string(),
@@ -157,9 +172,10 @@ pub fn new_api_client() -> Result<WebApiClient> {
         build_oauth(auth::NCSPOT_REDIRECT_URI.to_string()),
         fallback_config,
     )
-    .with_middleware(fallback_middleware);
+    .with_middleware(fallback_middleware.with_peer(primary_requests.clone()));
 
     Ok(WebApiClient::new(primary, Some(fallback))
+        .with_rate_limits(primary_requests, fallback_requests)
         .with_ncspot_only_get_endpoints(ncspot_only_get_endpoints))
 }
 
