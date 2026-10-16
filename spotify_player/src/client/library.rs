@@ -1,9 +1,10 @@
-//! Loading and refreshing the user's library, reusing its file-cached copy where possible.
+//! Loading and refreshing the user's library and playlists, reusing their file-cached copies
+//! where possible.
 
 use anyhow::{Context as _, Result};
 use rspotify::{
     http::Query,
-    model::{Page, SavedAlbum, SavedTrack},
+    model::{Page, PlaylistId, SavedAlbum, SavedTrack},
     prelude::Id,
 };
 
@@ -11,8 +12,9 @@ use super::AppClient;
 use crate::{
     config,
     state::{
-        Album, Context, FileCacheKey, LibrarySync, PlaylistFolderItem, SharedState, Track,
-        TTL_CACHE_DURATION, USER_LIKED_TRACKS_URI,
+        load_playlist_from_file_cache, remove_playlist_from_file_cache,
+        store_playlist_into_file_cache, Album, Context, FileCacheKey, LibrarySync, Playlist,
+        PlaylistFolderItem, SharedState, Track, TTL_CACHE_DURATION, USER_LIKED_TRACKS_URI,
     },
 };
 
@@ -265,6 +267,99 @@ impl AppClient {
                 .context("store the library sync state into the cache folder")?;
         }
         Ok(())
+    }
+
+    /// Load a playlist's tracks, reusing the disk copy (unless `refresh` is set) while its
+    /// `snapshot_id` matches Spotify's: the one recorded in the playlist list, or, for playlists
+    /// outside the user's library, the one returned by a lightweight request.
+    pub(super) async fn load_playlist_context(
+        &self,
+        state: &SharedState,
+        id: PlaylistId<'static>,
+        refresh: bool,
+    ) -> Result<Context> {
+        if !refresh {
+            if let Some(context) = self.cached_playlist_context(state, &id).await? {
+                return Ok(context);
+            }
+        }
+
+        let context = self.playlist_context(id).await?;
+        if let Context::Playlist { playlist, tracks } = &context {
+            // the downloaded tracks are still usable without a disk copy
+            if let Err(err) = Self::store_playlist(state, playlist, tracks) {
+                tracing::error!("Failed to cache playlist {}: {err:#}", playlist.id.id());
+            }
+        }
+        Ok(context)
+    }
+
+    async fn cached_playlist_context(
+        &self,
+        state: &SharedState,
+        id: &PlaylistId<'_>,
+    ) -> Result<Option<Context>> {
+        let Some(cached) = load_playlist_from_file_cache(&config::get_config().cache_folder, id)
+        else {
+            return Ok(None);
+        };
+
+        let listed = state
+            .data
+            .read()
+            .user_data
+            .playlist_snapshot(id)
+            .map(ToOwned::to_owned);
+        let snapshot_id = match listed {
+            Some(snapshot_id) => snapshot_id,
+            None => self.playlist_snapshot_id(id).await?,
+        };
+
+        if cached.playlist.snapshot_id == snapshot_id {
+            tracing::info!("Using the cached tracks of playlist {}", id.id());
+            Ok(Some(cached.into_context()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn playlist_snapshot_id(&self, id: &PlaylistId<'_>) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        struct Snapshot {
+            snapshot_id: String,
+        }
+
+        let snapshot: Snapshot = self
+            .http_get(
+                &format!("playlists/{}", id.id()),
+                &Query::from([("fields", "snapshot_id")]),
+            )
+            .await?;
+        Ok(snapshot.snapshot_id)
+    }
+
+    /// Cache a playlist's tracks on disk, recording its `snapshot_id` in the playlist list.
+    fn store_playlist(state: &SharedState, playlist: &Playlist, tracks: &[Track]) -> Result<()> {
+        store_playlist_into_file_cache(&config::get_config().cache_folder, playlist, tracks)
+            .context("store the playlist into the cache folder")?;
+
+        let list_changed = state
+            .data
+            .write()
+            .user_data
+            .update_playlist_snapshot(&playlist.id, &playlist.snapshot_id);
+        if list_changed {
+            Self::store_user_library(state, FileCacheKey::Playlists)?;
+        }
+        Ok(())
+    }
+
+    /// Discard a playlist's disk copy after an edit, so its next load downloads it again.
+    pub(crate) fn discard_cached_playlist(id: &PlaylistId<'_>) -> Result<()> {
+        // the edited in-memory copy is not written back instead: it may be sorted for display,
+        // which would then be mistaken for Spotify's order
+        remove_playlist_from_file_cache(&config::get_config().cache_folder, id)
+            .with_context(|| format!("remove the cached playlist {}", id.id()))
     }
 
     pub(super) fn liked_tracks_context(state: &SharedState) -> Context {

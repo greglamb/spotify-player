@@ -23,7 +23,7 @@ This file guides coding agents when working in this repository.
 | `client/mod.rs`               | `AppClient`: Spotify API calls, session management                          |
 | `client/request.rs`           | `ClientRequest` / `PlayerRequest` enums (async message types)               |
 | `client/handlers.rs`          | Tokio task: receives `ClientRequest`, dispatches API calls                  |
-| `client/library.rs`           | Library loading/refresh: file-cache reuse, incremental liked/album sync     |
+| `client/library.rs`           | Library/playlist caching: file-cache reuse, incremental sync, snapshots     |
 | `config/mod.rs`               | `Configs` loaded once into a `OnceLock`; read via `config::get_config()`    |
 | `config/keymap.rs`            | Default keybindings and key sequence lookup                                 |
 | `config/theme.rs`             | Theme definitions and style resolution                                      |

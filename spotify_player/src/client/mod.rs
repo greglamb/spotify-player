@@ -1153,8 +1153,7 @@ impl AppClient {
 
         // After adding a new track to a playlist, remove the cache of that playlist to force refetching new data
         state.data.write().caches.context.remove(&playlist_id.uri());
-
-        Ok(())
+        Self::discard_cached_playlist(&playlist_id)
     }
 
     /// Remove a track from a playlist
@@ -1183,7 +1182,7 @@ impl AppClient {
             tracks.retain(|t| t.id != track_id);
         }
 
-        Ok(())
+        Self::discard_cached_playlist(&playlist_id)
     }
 
     /// Reorder items in a playlist
@@ -1223,7 +1222,7 @@ impl AppClient {
             tracks.insert(insert_index, track);
         }
 
-        Ok(())
+        Self::discard_cached_playlist(&playlist_id)
     }
 
     /// Add a Spotify item to current user's library.
@@ -1410,7 +1409,10 @@ impl AppClient {
         }
 
         let ctx = match context {
-            ContextId::Playlist(playlist_id) => self.playlist_context(playlist_id).await?,
+            ContextId::Playlist(playlist_id) => {
+                self.load_playlist_context(state, playlist_id, refresh)
+                    .await?
+            }
             ContextId::Album(album_id) => self.album_context(album_id).await?,
             ContextId::Artist(artist_id) => self.artist_context(artist_id).await?,
             ContextId::Tracks(tracks_id) => match tracks_id.uri.as_str() {

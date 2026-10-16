@@ -1,7 +1,7 @@
 use std::io::{BufReader, BufWriter};
 use std::{
     collections::{HashMap, HashSet},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -12,6 +12,7 @@ use super::model::{
     PlaylistFolderNode, SearchResults, Show, Track,
 };
 use super::Lyrics;
+use rspotify::model::PlaylistId;
 
 pub type DataReadGuard<'a> = parking_lot::RwLockReadGuard<'a, AppData>;
 
@@ -364,6 +365,28 @@ impl UserData {
         }
     }
 
+    /// The `snapshot_id` recorded for a playlist in the user's playlist list.
+    pub fn playlist_snapshot(&self, id: &PlaylistId<'_>) -> Option<&str> {
+        self.playlists.iter().find_map(|item| match item {
+            PlaylistFolderItem::Playlist(p) if p.id == *id => Some(p.snapshot_id.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Record a newer `snapshot_id` for a playlist in the user's playlist list, returning
+    /// whether the list changed.
+    pub fn update_playlist_snapshot(&mut self, id: &PlaylistId<'_>, snapshot_id: &str) -> bool {
+        for item in &mut self.playlists {
+            if let PlaylistFolderItem::Playlist(p) = item {
+                if p.id == *id && p.snapshot_id != snapshot_id {
+                    p.snapshot_id = snapshot_id.to_string();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Get the user's liked tracks, most recently liked first (the order Spotify returns them in)
     pub fn liked_tracks(&self) -> Vec<Track> {
         let mut tracks: Vec<Track> = self.saved_tracks.values().cloned().collect();
@@ -442,6 +465,79 @@ impl UserData {
     }
 }
 
+/// A playlist's tracks as cached on disk; valid while `playlist.snapshot_id` matches Spotify's.
+#[derive(Deserialize)]
+pub struct CachedPlaylist {
+    pub playlist: Playlist,
+    pub tracks: Vec<Track>,
+}
+
+/// Serialized form of [`CachedPlaylist`], borrowing the data to store.
+#[derive(Serialize)]
+struct CachedPlaylistRef<'a> {
+    playlist: &'a Playlist,
+    tracks: &'a [Track],
+}
+
+impl CachedPlaylist {
+    pub fn into_context(self) -> Context {
+        Context::Playlist {
+            playlist: self.playlist,
+            tracks: self.tracks,
+        }
+    }
+}
+
+fn playlist_cache_path(cache_folder: &Path, id: &PlaylistId<'_>) -> PathBuf {
+    cache_folder
+        .join("playlists")
+        .join(format!("{}.json", id.id()))
+}
+
+pub fn store_playlist_into_file_cache(
+    cache_folder: &Path,
+    playlist: &Playlist,
+    tracks: &[Track],
+) -> std::io::Result<()> {
+    let path = playlist_cache_path(cache_folder, &playlist.id);
+    std::fs::create_dir_all(path.parent().expect("playlist cache path has a parent"))?;
+    let f = BufWriter::new(std::fs::File::create(path)?);
+    serde_json::to_writer(f, &CachedPlaylistRef { playlist, tracks })?;
+    Ok(())
+}
+
+pub fn load_playlist_from_file_cache(
+    cache_folder: &Path,
+    id: &PlaylistId<'_>,
+) -> Option<CachedPlaylist> {
+    let path = playlist_cache_path(cache_folder, id);
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            tracing::error!("Failed to open {}: {err:#}", path.display());
+            return None;
+        }
+    };
+    match serde_json::from_reader(BufReader::new(file)) {
+        Ok(cached) => Some(cached),
+        Err(err) => {
+            tracing::error!("Failed to load {}: {err:#}", path.display());
+            None
+        }
+    }
+}
+
+pub fn remove_playlist_from_file_cache(
+    cache_folder: &Path,
+    id: &PlaylistId<'_>,
+) -> std::io::Result<()> {
+    match std::fs::remove_file(playlist_cache_path(cache_folder, id)) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
 pub fn store_data_into_file_cache<T: Serialize>(
     key: FileCacheKey,
     cache_folder: &Path,
@@ -479,10 +575,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        store_data_into_file_cache, Album, FileCacheKey, Id, LibrarySync, MemoryCaches,
-        SearchCacheEntry, SearchResults, Track, UserData,
+        load_playlist_from_file_cache, remove_playlist_from_file_cache, store_data_into_file_cache,
+        store_playlist_into_file_cache, Album, FileCacheKey, Id, LibrarySync, MemoryCaches,
+        Playlist, PlaylistFolderItem, SearchCacheEntry, SearchResults, Track, UserData,
     };
-    use rspotify::model::{AlbumId, TrackId};
+    use rspotify::model::{AlbumId, PlaylistId, TrackId, UserId};
     use std::{collections::HashMap, path::PathBuf};
 
     /// A cache folder unique to one test, removed when dropped.
@@ -517,6 +614,55 @@ mod tests {
 
     fn tracks_by_uri(tracks: impl IntoIterator<Item = Track>) -> HashMap<String, Track> {
         tracks.into_iter().map(|t| (t.id.uri(), t)).collect()
+    }
+
+    fn playlist(id: &str, snapshot_id: &str) -> Playlist {
+        Playlist {
+            id: PlaylistId::from_id(id).unwrap().into_static(),
+            collaborative: false,
+            name: id.to_string(),
+            owner: (
+                "owner".to_string(),
+                UserId::from_id("owner").unwrap().into_static(),
+            ),
+            desc: String::new(),
+            current_folder_id: 0,
+            snapshot_id: snapshot_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn cached_playlist_round_trips() {
+        let folder = TempCacheFolder::new("playlist-round-trip");
+        let playlist = playlist("p", "v1");
+        store_playlist_into_file_cache(&folder.0, &playlist, &[track("a", 7)]).unwrap();
+
+        let cached = load_playlist_from_file_cache(&folder.0, &playlist.id).unwrap();
+        assert_eq!(cached.playlist.snapshot_id, "v1");
+        assert_eq!(cached.tracks.len(), 1);
+        assert_eq!(cached.tracks[0].added_at, 7);
+
+        remove_playlist_from_file_cache(&folder.0, &playlist.id).unwrap();
+        assert!(load_playlist_from_file_cache(&folder.0, &playlist.id).is_none());
+        // removing a playlist that is not cached is not an error
+        remove_playlist_from_file_cache(&folder.0, &playlist.id).unwrap();
+    }
+
+    #[test]
+    fn records_newer_playlist_snapshots_in_the_list() {
+        let folder = TempCacheFolder::new("playlist-snapshots");
+        let mut user_data = UserData::new_from_file_caches(&folder.0);
+        user_data.playlists = vec![PlaylistFolderItem::Playlist(playlist("p", "v1"))];
+        let id = PlaylistId::from_id("p").unwrap();
+        let unknown = PlaylistId::from_id("q").unwrap();
+
+        assert_eq!(user_data.playlist_snapshot(&id), Some("v1"));
+        assert_eq!(user_data.playlist_snapshot(&unknown), None);
+
+        assert!(user_data.update_playlist_snapshot(&id, "v2"));
+        assert!(!user_data.update_playlist_snapshot(&id, "v2"));
+        assert!(!user_data.update_playlist_snapshot(&unknown, "v2"));
+        assert_eq!(user_data.playlist_snapshot(&id), Some("v2"));
     }
 
     fn album(id: &str, added_at: u64) -> Album {

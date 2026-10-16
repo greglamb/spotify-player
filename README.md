@@ -610,7 +610,9 @@ Your library (playlists, followed artists, saved albums and shows, liked tracks)
 
 To pick up changes made in other Spotify apps, refresh the library: all of it with `RefreshLibrary` (`U U`), or one part with `RefreshPlaylists` (`U p`), `RefreshFollowedArtists` (`U a`), `RefreshSavedAlbums` (`U A`), `RefreshSavedShows` (`U s`) or `RefreshLikedTracks` (`U y`). `RefreshPlaylists` refreshes only your list of playlists (names, owners, folders), not their tracks. Liked tracks and saved albums refresh incrementally: only items added since the last refresh are downloaded, usually a single request. If Spotify's item count shows other changes, such as tracks unliked in another app, that part is downloaded in full instead. Delete the cache files to force a full download on the next launch.
 
-A playlist's tracks are not part of the library cache: they are downloaded when you open the playlist and kept in memory for an hour. `RefreshCurrentContext` (`U c`) downloads the tracks of the playlist, album, artist or show on the current page again, or of the playing one when no such page is open.
+A playlist's tracks are saved in `playlists/<playlist_id>.json` the first time you open it. Reopening it, even after a restart, reuses that copy while it matches the playlist's version (its `snapshot_id`) in your playlist list, so an unchanged playlist costs no requests. After `RefreshPlaylists` (`U p`) picks up new versions, only the playlists that changed are downloaded again, when you next open them. Playlists outside your library are checked with one small request instead. Editing a playlist, in the app or with the `playlist` CLI commands, discards its saved copy.
+
+`RefreshCurrentContext` (`U c`) downloads the tracks of the playlist, album, artist or show on the current page again, or of the playing one when no such page is open.
 
 ### Logging
 
