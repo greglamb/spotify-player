@@ -30,11 +30,16 @@ pub async fn start_client_handler(
         let state = state.clone();
         let client = client.clone();
         let span = tracing::info_span!("client_request", request = ?request);
+        let background = request.is_background();
 
         tokio::task::spawn(
             async move {
                 if let Err(err) = client.handle_request(&state, request).await {
-                    tracing::error!("Failed to handle client request: {err:#}");
+                    if background {
+                        tracing::warn!("Failed to handle a background request: {err:#}");
+                    } else {
+                        tracing::error!("Failed to handle client request: {err:#}");
+                    }
                 }
             }
             .instrument(span),

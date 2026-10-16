@@ -3,6 +3,19 @@ use crate::state::{
     TrackId,
 };
 
+impl ClientRequest {
+    /// Whether the application sent this request on its own, rather than the user asking for it.
+    ///
+    /// A background refresh is made again on the next tick, so a failed one costs the user
+    /// nothing and is reported as a warning instead of interrupting them with an error.
+    pub fn is_background(&self) -> bool {
+        matches!(
+            self,
+            Self::GetCurrentPlayback | Self::GetCurrentUserQueue | Self::GetRecentPlaylistPlays
+        )
+    }
+}
+
 /// How a library refresh was asked for, which decides how much of a collection is downloaded
 /// and how a failure is reported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
