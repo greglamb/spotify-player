@@ -43,6 +43,11 @@ pub enum Command {
 
     RefreshPlayback,
     RefreshLibrary,
+    RefreshPlaylists,
+    RefreshFollowedArtists,
+    RefreshSavedAlbums,
+    RefreshSavedShows,
+    RefreshLikedTracks,
 
     #[cfg(feature = "streaming")]
     RestartIntegratedClient,
@@ -336,8 +341,13 @@ impl Command {
             Self::JumpToCurrentTrackInContext => "jump to the current track in the context",
             Self::RefreshPlayback => "manually refresh the current playback",
             Self::RefreshLibrary => {
-                "re-download the user's library (playlists, followed artists, saved albums/shows, liked tracks)"
+                "refresh the user's whole library (playlists, followed artists, saved albums/shows, liked tracks)"
             }
+            Self::RefreshPlaylists => "refresh the user's playlists",
+            Self::RefreshFollowedArtists => "refresh the user's followed artists",
+            Self::RefreshSavedAlbums => "refresh the user's saved albums",
+            Self::RefreshSavedShows => "refresh the user's saved shows",
+            Self::RefreshLikedTracks => "refresh the user's liked tracks",
             Self::ShowActionsOnSelectedItem => "open a popup showing actions on a selected item",
             Self::ShowActionsOnCurrentTrack => "open a popup showing actions on the current track",
             Self::ShowActionsOnCurrentContext => "open a popup showing actions on the current context",

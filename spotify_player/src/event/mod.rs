@@ -11,12 +11,12 @@ use crate::{
     state::{
         ActionListItem, Album, AlbumId, Alert, Artist, ArtistFocusState, ArtistId,
         ArtistPopupAction, BrowsePageUIState, ConfirmableAction, Context, ContextId,
-        ContextPageType, ContextPageUIState, DataReadGuard, Focusable, Id, Item, ItemId,
-        LibraryFocusState, LibraryPageUIState, PageState, PageType, PlayableId, Playback,
+        ContextPageType, ContextPageUIState, DataReadGuard, FileCacheKey, Focusable, Id, Item,
+        ItemId, LibraryFocusState, LibraryPageUIState, PageState, PageType, PlayableId, Playback,
         PlaylistCreateCurrentField, PlaylistFolderItem, PlaylistId, PlaylistPopupAction,
         PopupState, SearchFocusState, SearchPageUIState, SharedState, ShowId, Track, TrackId,
-        TrackOrder, TracksId, UIStateGuard, USER_LIKED_TRACKS_ID, USER_RECENTLY_PLAYED_TRACKS_ID,
-        USER_TOP_TRACKS_ID,
+        TrackOrder, TracksId, UIStateGuard, LIBRARY_COLLECTIONS, USER_LIKED_TRACKS_ID,
+        USER_RECENTLY_PLAYED_TRACKS_ID, USER_TOP_TRACKS_ID,
     },
     ui::{single_line_input::LineInput, Orientation},
     utils::parse_uri,
@@ -689,7 +689,34 @@ fn handle_global_command(
             client_pub.send(ClientRequest::GetCurrentPlayback)?;
         }
         Command::RefreshLibrary => {
-            client_pub.send(ClientRequest::RefreshUserLibrary)?;
+            client_pub.send(ClientRequest::RefreshUserLibrary(
+                LIBRARY_COLLECTIONS.to_vec(),
+            ))?;
+        }
+        Command::RefreshPlaylists => {
+            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
+                FileCacheKey::Playlists,
+            ]))?;
+        }
+        Command::RefreshFollowedArtists => {
+            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
+                FileCacheKey::FollowedArtists,
+            ]))?;
+        }
+        Command::RefreshSavedAlbums => {
+            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
+                FileCacheKey::SavedAlbums,
+            ]))?;
+        }
+        Command::RefreshSavedShows => {
+            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
+                FileCacheKey::SavedShows,
+            ]))?;
+        }
+        Command::RefreshLikedTracks => {
+            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
+                FileCacheKey::SavedTracks,
+            ]))?;
         }
         Command::ShowActionsOnCurrentTrack => {
             if let Some(currently_playing) = state.player.read().currently_playing() {

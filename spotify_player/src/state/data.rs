@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::LazyLock;
 
 use super::model::{
@@ -15,7 +15,7 @@ use super::Lyrics;
 
 pub type DataReadGuard<'a> = parking_lot::RwLockReadGuard<'a, AppData>;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FileCacheKey {
     Playlists,
     PlaylistFolders,
@@ -23,6 +23,41 @@ pub enum FileCacheKey {
     SavedShows,
     SavedAlbums,
     SavedTracks,
+    LibrarySync,
+}
+
+/// Library collections that can be downloaded from Spotify
+pub const LIBRARY_COLLECTIONS: [FileCacheKey; 5] = [
+    FileCacheKey::Playlists,
+    FileCacheKey::FollowedArtists,
+    FileCacheKey::SavedAlbums,
+    FileCacheKey::SavedShows,
+    FileCacheKey::SavedTracks,
+];
+
+/// Spotify's state of a collection ordered by date added (liked tracks, saved albums) when it
+/// was last synced, so a refresh can download only the items added since.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibrarySync {
+    /// Number of items Spotify reports, including ones the app drops (e.g. unplayable tracks)
+    pub total: usize,
+    pub newest_added_at: u64,
+}
+
+impl LibrarySync {
+    /// The sync state of a fully downloaded collection.
+    pub fn from_items<T>(items: &[T], added_at: impl Fn(&T) -> u64) -> Self {
+        Self {
+            total: items.len(),
+            newest_added_at: items.iter().map(added_at).max().unwrap_or_default(),
+        }
+    }
+
+    /// Whether Spotify's current `total` is explained by `new_count` items added since the sync,
+    /// `re_added` of which were already in the collection (re-liked or re-saved).
+    fn only_added(self, new_count: usize, re_added: usize, total: usize) -> bool {
+        self.total + new_count - re_added == total
+    }
 }
 
 /// default time-to-live cache duration
@@ -49,6 +84,7 @@ pub struct UserData {
     /// Library collections already loaded from a file cache or Spotify, which are only
     /// re-downloaded on an explicit refresh.
     pub loaded: HashSet<FileCacheKey>,
+    pub sync: HashMap<FileCacheKey, LibrarySync>,
 }
 
 #[derive(Debug)]
@@ -209,7 +245,91 @@ impl UserData {
             saved_albums,
             saved_tracks,
             loaded,
+            sync: load_data_from_file_cache(FileCacheKey::LibrarySync, cache_folder)
+                .unwrap_or_default(),
         }
+    }
+
+    /// Sync state of a collection whose cached copy can be brought up to date incrementally.
+    pub fn incremental_sync(&self, key: FileCacheKey) -> Option<LibrarySync> {
+        if self.is_loaded(key) {
+            self.sync.get(&key).copied()
+        } else {
+            None
+        }
+    }
+
+    /// Keep a collection's sync state in step with an item added to or removed from it in the app.
+    pub fn record_library_change(&mut self, key: FileCacheKey, added: bool) {
+        if let Some(sync) = self.sync.get_mut(&key) {
+            sync.total = if added {
+                sync.total + 1
+            } else {
+                sync.total.saturating_sub(1)
+            };
+        }
+    }
+
+    /// Merge tracks liked since the last sync, given the `new` sync state of the items Spotify
+    /// returned (including unplayable tracks absent from `tracks`) and its current `total`.
+    ///
+    /// Returns `false`, changing nothing, when `total` shows other changes (e.g. tracks unliked
+    /// in another app) that only a full download can pick up.
+    pub fn merge_liked_tracks(
+        &mut self,
+        tracks: Vec<Track>,
+        new: LibrarySync,
+        total: usize,
+    ) -> bool {
+        let Some(sync) = self.sync.get(&FileCacheKey::SavedTracks).copied() else {
+            return false;
+        };
+        let re_liked = tracks
+            .iter()
+            .filter(|t| self.saved_tracks.contains_key(&t.id.uri()))
+            .count();
+        if !sync.only_added(new.total, re_liked, total) {
+            return false;
+        }
+
+        self.saved_tracks
+            .extend(tracks.into_iter().map(|t| (t.id.uri(), t)));
+        self.sync.insert(
+            FileCacheKey::SavedTracks,
+            LibrarySync {
+                total,
+                newest_added_at: new.newest_added_at.max(sync.newest_added_at),
+            },
+        );
+        true
+    }
+
+    /// Merge albums saved since the last sync, given Spotify's current `total`; see
+    /// [`Self::merge_liked_tracks`].
+    pub fn merge_saved_albums(&mut self, albums: Vec<Album>, total: usize) -> bool {
+        let Some(sync) = self.sync.get(&FileCacheKey::SavedAlbums).copied() else {
+            return false;
+        };
+        let re_saved = albums
+            .iter()
+            .filter(|a| self.saved_albums.iter().any(|s| s.id == a.id))
+            .count();
+        if !sync.only_added(albums.len(), re_saved, total) {
+            return false;
+        }
+
+        let new = LibrarySync::from_items(&albums, |a| a.added_at);
+        self.saved_albums
+            .retain(|s| !albums.iter().any(|a| a.id == s.id));
+        self.saved_albums.splice(0..0, albums);
+        self.sync.insert(
+            FileCacheKey::SavedAlbums,
+            LibrarySync {
+                total,
+                newest_added_at: new.newest_added_at.max(sync.newest_added_at),
+            },
+        );
+        true
     }
 
     pub fn is_loaded(&self, key: FileCacheKey) -> bool {
@@ -240,6 +360,7 @@ impl UserData {
             FileCacheKey::SavedTracks => {
                 store_data_into_file_cache(key, cache_folder, &self.saved_tracks)
             }
+            FileCacheKey::LibrarySync => store_data_into_file_cache(key, cache_folder, &self.sync),
         }
     }
 
@@ -358,10 +479,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        store_data_into_file_cache, FileCacheKey, Id, MemoryCaches, SearchCacheEntry,
-        SearchResults, Track, UserData,
+        store_data_into_file_cache, Album, FileCacheKey, Id, LibrarySync, MemoryCaches,
+        SearchCacheEntry, SearchResults, Track, UserData,
     };
-    use rspotify::model::TrackId;
+    use rspotify::model::{AlbumId, TrackId};
     use std::{collections::HashMap, path::PathBuf};
 
     /// A cache folder unique to one test, removed when dropped.
@@ -396,6 +517,166 @@ mod tests {
 
     fn tracks_by_uri(tracks: impl IntoIterator<Item = Track>) -> HashMap<String, Track> {
         tracks.into_iter().map(|t| (t.id.uri(), t)).collect()
+    }
+
+    fn album(id: &str, added_at: u64) -> Album {
+        Album {
+            id: AlbumId::from_id(id).unwrap().into_static(),
+            release_date: String::new(),
+            name: id.to_string(),
+            artists: vec![],
+            typ: None,
+            added_at,
+        }
+    }
+
+    /// User data whose liked tracks `a` and `b` are in sync with Spotify.
+    fn synced_liked_tracks(folder: &TempCacheFolder) -> UserData {
+        let mut user_data = UserData::new_from_file_caches(&folder.0);
+        user_data.saved_tracks = tracks_by_uri([track("a", 1), track("b", 2)]);
+        user_data.sync.insert(
+            FileCacheKey::SavedTracks,
+            LibrarySync {
+                total: 2,
+                newest_added_at: 2,
+            },
+        );
+        user_data
+    }
+
+    fn liked_names(user_data: &UserData) -> Vec<String> {
+        user_data
+            .liked_tracks()
+            .into_iter()
+            .map(|t| t.name)
+            .collect()
+    }
+
+    #[test]
+    fn merges_newly_liked_tracks() {
+        let folder = TempCacheFolder::new("merge-new-likes");
+        let mut user_data = synced_liked_tracks(&folder);
+
+        let new = LibrarySync {
+            total: 1,
+            newest_added_at: 3,
+        };
+        assert!(user_data.merge_liked_tracks(vec![track("c", 3)], new, 3));
+
+        assert_eq!(liked_names(&user_data), ["c", "b", "a"]);
+        assert_eq!(
+            user_data.sync[&FileCacheKey::SavedTracks],
+            LibrarySync {
+                total: 3,
+                newest_added_at: 3
+            }
+        );
+    }
+
+    #[test]
+    fn merges_re_liked_tracks() {
+        let folder = TempCacheFolder::new("merge-re-likes");
+        let mut user_data = synced_liked_tracks(&folder);
+
+        let new = LibrarySync {
+            total: 1,
+            newest_added_at: 5,
+        };
+        assert!(user_data.merge_liked_tracks(vec![track("a", 5)], new, 2));
+
+        assert_eq!(liked_names(&user_data), ["a", "b"]);
+    }
+
+    #[test]
+    fn counts_new_unplayable_tracks_towards_the_total() {
+        let folder = TempCacheFolder::new("merge-unplayable");
+        let mut user_data = synced_liked_tracks(&folder);
+
+        let new = LibrarySync {
+            total: 1,
+            newest_added_at: 3,
+        };
+        assert!(user_data.merge_liked_tracks(vec![], new, 3));
+
+        assert_eq!(user_data.saved_tracks.len(), 2);
+        assert_eq!(user_data.sync[&FileCacheKey::SavedTracks].total, 3);
+    }
+
+    #[test]
+    fn rejects_merge_when_tracks_were_unliked_elsewhere() {
+        let folder = TempCacheFolder::new("merge-removed");
+        let mut user_data = synced_liked_tracks(&folder);
+
+        let new = LibrarySync {
+            total: 1,
+            newest_added_at: 3,
+        };
+        assert!(!user_data.merge_liked_tracks(vec![track("c", 3)], new, 2));
+
+        assert_eq!(liked_names(&user_data), ["b", "a"]);
+        assert_eq!(user_data.sync[&FileCacheKey::SavedTracks].total, 2);
+    }
+
+    #[test]
+    fn local_library_changes_keep_the_sync_total() {
+        let folder = TempCacheFolder::new("local-changes");
+        let mut user_data = synced_liked_tracks(&folder);
+
+        user_data.record_library_change(FileCacheKey::SavedTracks, true);
+        assert_eq!(user_data.sync[&FileCacheKey::SavedTracks].total, 3);
+        user_data.record_library_change(FileCacheKey::SavedTracks, false);
+        user_data.record_library_change(FileCacheKey::SavedTracks, false);
+        assert_eq!(user_data.sync[&FileCacheKey::SavedTracks].total, 1);
+    }
+
+    #[test]
+    fn merges_newly_saved_albums_first() {
+        let folder = TempCacheFolder::new("merge-albums");
+        let mut user_data = UserData::new_from_file_caches(&folder.0);
+        user_data.saved_albums = vec![album("b", 2), album("a", 1)];
+        user_data.sync.insert(
+            FileCacheKey::SavedAlbums,
+            LibrarySync {
+                total: 2,
+                newest_added_at: 2,
+            },
+        );
+
+        assert!(!user_data.merge_saved_albums(vec![album("c", 3)], 2));
+        assert!(user_data.merge_saved_albums(vec![album("c", 4), album("a", 3)], 3));
+
+        let names: Vec<&str> = user_data
+            .saved_albums
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(names, ["c", "a", "b"]);
+        assert_eq!(
+            user_data.sync[&FileCacheKey::SavedAlbums],
+            LibrarySync {
+                total: 3,
+                newest_added_at: 4
+            }
+        );
+    }
+
+    #[test]
+    fn incremental_sync_requires_a_loaded_cache() {
+        let folder = TempCacheFolder::new("sync-needs-cache");
+        let mut user_data = synced_liked_tracks(&folder);
+        user_data
+            .store_into_file_cache(FileCacheKey::LibrarySync, &folder.0)
+            .unwrap();
+
+        // the sync state is reloaded, but describes a liked tracks cache that no longer exists
+        let reloaded = UserData::new_from_file_caches(&folder.0);
+        assert_eq!(reloaded.sync.len(), 1);
+        assert_eq!(reloaded.incremental_sync(FileCacheKey::SavedTracks), None);
+
+        user_data.loaded.insert(FileCacheKey::SavedTracks);
+        assert!(user_data
+            .incremental_sync(FileCacheKey::SavedTracks)
+            .is_some());
     }
 
     #[test]

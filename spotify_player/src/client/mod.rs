@@ -27,6 +27,7 @@ use rspotify::model::LibraryId;
 use rspotify::{http::Query, prelude::*};
 
 mod handlers;
+mod library;
 mod middleware;
 mod request;
 mod spotify;
@@ -550,8 +551,8 @@ impl AppClient {
                 self.load_user_library(state, FileCacheKey::SavedShows)
                     .await?;
             }
-            ClientRequest::RefreshUserLibrary => {
-                self.refresh_user_library(state).await;
+            ClientRequest::RefreshUserLibrary(keys) => {
+                self.refresh_user_library(state, &keys).await;
             }
             ClientRequest::GetContext(context) => {
                 let uri = context.uri();
@@ -1264,98 +1265,6 @@ impl AppClient {
         Ok(())
     }
 
-    /// Download a library collection unless a copy is already loaded (from a file cache or an
-    /// earlier download); `RefreshUserLibrary` re-downloads it on demand.
-    async fn load_user_library(&self, state: &SharedState, key: FileCacheKey) -> Result<()> {
-        if state.data.read().user_data.is_loaded(key) {
-            return Ok(());
-        }
-        self.fetch_user_library(state, key).await
-    }
-
-    /// Download a library collection from Spotify, replacing its in-memory and file-cached copies.
-    async fn fetch_user_library(&self, state: &SharedState, key: FileCacheKey) -> Result<()> {
-        match key {
-            FileCacheKey::Playlists => {
-                let playlists = self.current_user_playlists().await?;
-                let node = state.data.read().user_data.playlist_folder_node.clone();
-                let playlists = if let Some(node) = node.filter(|n| !n.children.is_empty()) {
-                    crate::playlist_folders::structurize(playlists, &node.children)
-                } else {
-                    playlists
-                        .into_iter()
-                        .map(PlaylistFolderItem::Playlist)
-                        .collect()
-                };
-                state.data.write().user_data.playlists = playlists;
-            }
-            FileCacheKey::FollowedArtists => {
-                let artists = self.current_user_followed_artists().await?;
-                state.data.write().user_data.followed_artists = artists;
-            }
-            FileCacheKey::SavedAlbums => {
-                let albums = self.current_user_saved_albums().await?;
-                state.data.write().user_data.saved_albums = albums;
-            }
-            FileCacheKey::SavedShows => {
-                let shows = self.current_user_saved_shows().await?;
-                state.data.write().user_data.saved_shows = shows;
-            }
-            FileCacheKey::SavedTracks => {
-                let tracks = self.current_user_saved_tracks().await?;
-                state.data.write().user_data.saved_tracks =
-                    tracks.into_iter().map(|t| (t.id.uri(), t)).collect();
-            }
-            FileCacheKey::PlaylistFolders => {
-                anyhow::bail!("playlist folders cannot be downloaded from Spotify")
-            }
-        }
-        state.data.write().user_data.loaded.insert(key);
-        Self::store_user_library(state, key)
-    }
-
-    /// Re-download the whole library, so changes made outside the app become visible.
-    async fn refresh_user_library(&self, state: &SharedState) {
-        tracing::info!("Refreshing the user's library");
-        for key in [
-            FileCacheKey::Playlists,
-            FileCacheKey::FollowedArtists,
-            FileCacheKey::SavedAlbums,
-            FileCacheKey::SavedShows,
-            FileCacheKey::SavedTracks,
-        ] {
-            // one failed collection must not prevent refreshing the others
-            if let Err(err) = self.fetch_user_library(state, key).await {
-                tracing::error!("Failed to refresh {key:?}: {err:#}");
-            }
-        }
-
-        let liked_tracks = Self::liked_tracks_context(state);
-        state.data.write().caches.context.insert(
-            USER_LIKED_TRACKS_URI.to_string(),
-            liked_tracks,
-            *TTL_CACHE_DURATION,
-        );
-    }
-
-    /// Persist a library collection after it changes in memory, so a later startup that skips
-    /// downloading it still sees the change.
-    fn store_user_library(state: &SharedState, key: FileCacheKey) -> Result<()> {
-        state
-            .data
-            .read()
-            .user_data
-            .store_into_file_cache(key, &config::get_config().cache_folder)
-            .with_context(|| format!("store {key:?} into the cache folder"))
-    }
-
-    fn liked_tracks_context(state: &SharedState) -> Context {
-        Context::Tracks {
-            tracks: state.data.read().user_data.liked_tracks(),
-            desc: "User's liked tracks".to_string(),
-        }
-    }
-
     /// Add a Spotify item to current user's library.
     async fn add_to_library(&self, state: &SharedState, item: Item) -> Result<()> {
         // Before adding new item, checks if that item already exists in the library to avoid adding a duplicated item.
@@ -1377,7 +1286,7 @@ impl AppClient {
                         .user_data
                         .saved_tracks
                         .insert(track.id.uri(), track);
-                    Self::store_user_library(state, FileCacheKey::SavedTracks)?;
+                    Self::store_library_change(state, FileCacheKey::SavedTracks, true)?;
                 }
             }
             Item::Album(album) => {
@@ -1389,7 +1298,7 @@ impl AppClient {
                         .await?;
                     // update the in-memory `user_data`
                     state.data.write().user_data.saved_albums.insert(0, album);
-                    Self::store_user_library(state, FileCacheKey::SavedAlbums)?;
+                    Self::store_library_change(state, FileCacheKey::SavedAlbums, true)?;
                 }
             }
             Item::Artist(artist) => {
@@ -1406,7 +1315,7 @@ impl AppClient {
                         .user_data
                         .followed_artists
                         .insert(0, artist);
-                    Self::store_user_library(state, FileCacheKey::FollowedArtists)?;
+                    Self::store_library_change(state, FileCacheKey::FollowedArtists, true)?;
                 }
             }
             Item::Playlist(playlist) => {
@@ -1432,7 +1341,7 @@ impl AppClient {
                             .user_data
                             .playlists
                             .insert(0, PlaylistFolderItem::Playlist(playlist));
-                        Self::store_user_library(state, FileCacheKey::Playlists)?;
+                        Self::store_library_change(state, FileCacheKey::Playlists, true)?;
                     }
                 }
             }
@@ -1445,7 +1354,7 @@ impl AppClient {
                         .await?;
                     // update the in-memory `user_data`
                     state.data.write().user_data.saved_shows.insert(0, show);
-                    Self::store_user_library(state, FileCacheKey::SavedShows)?;
+                    Self::store_library_change(state, FileCacheKey::SavedShows, true)?;
                 }
             }
         }
@@ -1459,7 +1368,7 @@ impl AppClient {
                 let uri = id.uri();
                 self.library_remove([LibraryId::Track(id)]).await?;
                 state.data.write().user_data.saved_tracks.remove(&uri);
-                Self::store_user_library(state, FileCacheKey::SavedTracks)?;
+                Self::store_library_change(state, FileCacheKey::SavedTracks, false)?;
             }
             ItemId::Album(id) => {
                 state
@@ -1469,7 +1378,7 @@ impl AppClient {
                     .saved_albums
                     .retain(|a| a.id != id);
                 self.library_remove([LibraryId::Album(id)]).await?;
-                Self::store_user_library(state, FileCacheKey::SavedAlbums)?;
+                Self::store_library_change(state, FileCacheKey::SavedAlbums, false)?;
             }
             ItemId::Artist(id) => {
                 state
@@ -1479,7 +1388,7 @@ impl AppClient {
                     .followed_artists
                     .retain(|a| a.id != id);
                 self.library_remove([LibraryId::Artist(id)]).await?;
-                Self::store_user_library(state, FileCacheKey::FollowedArtists)?;
+                Self::store_library_change(state, FileCacheKey::FollowedArtists, false)?;
             }
             ItemId::Playlist(id) => {
                 state
@@ -1492,7 +1401,7 @@ impl AppClient {
                         PlaylistFolderItem::Folder(_) => true,
                     });
                 self.library_remove([LibraryId::Playlist(id)]).await?;
-                Self::store_user_library(state, FileCacheKey::Playlists)?;
+                Self::store_library_change(state, FileCacheKey::Playlists, false)?;
             }
             ItemId::Show(id) => {
                 state
@@ -1502,7 +1411,7 @@ impl AppClient {
                     .saved_shows
                     .retain(|s| s.id != id);
                 self.library_remove([LibraryId::Show(id)]).await?;
-                Self::store_user_library(state, FileCacheKey::SavedShows)?;
+                Self::store_library_change(state, FileCacheKey::SavedShows, false)?;
             }
         }
         Ok(())
@@ -1948,7 +1857,7 @@ impl AppClient {
             .user_data
             .playlists
             .insert(0, PlaylistFolderItem::Playlist(playlist));
-        Self::store_user_library(state, FileCacheKey::Playlists)
+        Self::store_library_change(state, FileCacheKey::Playlists, true)
     }
 
     #[cfg(feature = "notify")]
