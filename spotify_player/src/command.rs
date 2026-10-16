@@ -342,7 +342,7 @@ impl Command {
             Self::JumpToCurrentTrackInContext => "jump to the current track in the context",
             Self::RefreshPlayback => "manually refresh the current playback",
             Self::RefreshLibrary => {
-                "refresh the user's whole library (playlists, followed artists, saved albums/shows, liked tracks)"
+                "download the user's whole library again (playlists, followed artists, saved albums/shows, liked tracks)"
             }
             Self::RefreshPlaylists => "refresh the user's playlists",
             Self::RefreshFollowedArtists => "refresh the user's followed artists",

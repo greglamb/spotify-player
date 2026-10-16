@@ -19,6 +19,9 @@ const RATE_LIMIT_HINT: &str = "requests are paused until the Retry-After delay e
 /// [`RATE_LIMIT_HINT`] for a client that has a peer client to route requests to.
 const RATE_LIMIT_PEER_HINT: &str =
     "requests are routed to the other Spotify client ID until the Retry-After delay elapses";
+/// [`RATE_LIMIT_HINT`] for a client whose peer client is rate limited as well.
+const RATE_LIMIT_BOTH_HINT: &str = "both Spotify client IDs are rate limited; requests are \
+     paused until a Retry-After delay elapses";
 
 #[derive(Clone, Debug)]
 struct CachedResponse {
@@ -168,7 +171,7 @@ impl SpotifyApiRequestManager {
         }
     }
 
-    async fn store_retry_after(&self, retry_after: Duration) {
+    pub(super) async fn store_retry_after(&self, retry_after: Duration) {
         let retry_after_until = Instant::now() + retry_after + Duration::from_secs(1);
         let mut state = self.state.lock().await;
         if state
@@ -256,11 +259,18 @@ impl SpotifyApiMiddleware {
         }
     }
 
-    fn rate_limit_hint(&self) -> &'static str {
-        if self.peer.is_some() {
-            RATE_LIMIT_PEER_HINT
-        } else {
-            RATE_LIMIT_HINT
+    /// The hint attached to a rate-limit warning, naming the recovery the request actually
+    /// gets: another client to route to, a wait on both clients, or no peer at all.
+    async fn rate_limit_hint(&self) -> &'static str {
+        match &self.peer {
+            None => RATE_LIMIT_HINT,
+            Some(peer) => {
+                if peer.retry_after_remaining().await.is_none() {
+                    RATE_LIMIT_PEER_HINT
+                } else {
+                    RATE_LIMIT_BOTH_HINT
+                }
+            }
         }
     }
 
@@ -304,14 +314,20 @@ impl SpotifyApiMiddleware {
             return;
         }
 
-        if let Some(retry_after) = Self::retry_after(response.headers()) {
+        let retry_after = Self::retry_after(response.headers());
+        if let Some(retry_after) = retry_after {
             self.requests.store_retry_after(retry_after).await;
+        }
+        // resolved before the warning: an `await` inside the macro makes the future `!Send`
+        let hint = self.rate_limit_hint().await;
+
+        if let Some(retry_after) = retry_after {
             tracing::warn!(
                 client = %self.client,
                 %method,
                 %url,
                 retry_after_secs = retry_after.as_secs(),
-                hint = self.rate_limit_hint(),
+                hint,
                 "Spotify Web API rate limit encountered"
             );
         } else {
@@ -319,7 +335,7 @@ impl SpotifyApiMiddleware {
                 client = %self.client,
                 %method,
                 %url,
-                hint = self.rate_limit_hint(),
+                hint,
                 "Spotify Web API rate limit encountered without a valid Retry-After duration"
             );
         }

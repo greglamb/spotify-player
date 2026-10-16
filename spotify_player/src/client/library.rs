@@ -46,11 +46,19 @@ impl AppClient {
     }
 
     /// Bring library collections up to date, so changes made outside the app become visible.
-    pub(super) async fn refresh_user_library(&self, state: &SharedState, keys: &[FileCacheKey]) {
-        tracing::info!("Refreshing the user's library: {keys:?}");
+    ///
+    /// `full` downloads each collection as a whole instead of only the items added since its
+    /// last sync, which is the only way to pick up items removed in another app.
+    pub(super) async fn refresh_user_library(
+        &self,
+        state: &SharedState,
+        keys: &[FileCacheKey],
+        full: bool,
+    ) {
+        tracing::info!("Refreshing the user's library: {keys:?} (full: {full})");
         for &key in keys {
             // one failed collection must not prevent refreshing the others
-            if let Err(err) = self.refresh_library_collection(state, key).await {
+            if let Err(err) = self.refresh_library_collection(state, key, full).await {
                 tracing::error!("Failed to refresh {key:?}: {err:#}");
             }
         }
@@ -66,13 +74,18 @@ impl AppClient {
     }
 
     /// Update a collection by downloading only what was added since its last sync when possible,
-    /// and in full otherwise.
+    /// and in full otherwise or when `full` is set.
     async fn refresh_library_collection(
         &self,
         state: &SharedState,
         key: FileCacheKey,
+        full: bool,
     ) -> Result<()> {
-        let sync = state.data.read().user_data.incremental_sync(key);
+        let sync = if full {
+            None
+        } else {
+            state.data.read().user_data.incremental_sync(key)
+        };
         let merged = match (key, sync) {
             (FileCacheKey::SavedTracks, Some(sync)) => {
                 self.merge_new_liked_tracks(state, sync).await?
@@ -241,17 +254,18 @@ impl AppClient {
 
     /// Persist a library collection after an item was added to or removed from it in the app, so
     /// a later startup that skips downloading it still sees the change.
-    pub(super) fn store_library_change(
-        state: &SharedState,
-        key: FileCacheKey,
-        added: bool,
-    ) -> Result<()> {
+    ///
+    /// The change already stands on Spotify and in memory, so a failed cache write is only
+    /// logged; refreshing the collection repairs the saved copy.
+    pub(super) fn store_library_change(state: &SharedState, key: FileCacheKey, added: bool) {
         state
             .data
             .write()
             .user_data
             .record_library_change(key, added);
-        Self::store_user_library(state, key)
+        if let Err(err) = Self::store_user_library(state, key) {
+            tracing::error!("Failed to cache the change to {key:?}: {err:#}");
+        }
     }
 
     /// Persist a library collection, along with its sync state if it has one.

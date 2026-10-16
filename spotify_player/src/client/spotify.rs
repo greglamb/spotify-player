@@ -223,6 +223,24 @@ fn should_reroute(preferred: Option<Duration>, other: Option<Duration>) -> bool 
     }
 }
 
+/// One of the two Spotify clients a request can be routed to.
+#[derive(Clone, Copy)]
+struct Route<'a> {
+    name: &'static str,
+    client: &'a PkceWebApiClient,
+    limits: Option<&'a SpotifyApiRequestManager>,
+}
+
+impl Route<'_> {
+    /// How long this client must still wait out a `Retry-After` delay, if any.
+    async fn cooldown(&self) -> Option<Duration> {
+        match self.limits {
+            Some(limits) => limits.retry_after_remaining().await,
+            None => None,
+        }
+    }
+}
+
 impl Default for WebApiClient {
     fn default() -> Self {
         Self::new(AuthCodePkceSpotify::default(), None)
@@ -290,6 +308,8 @@ impl WebApiClient {
     ///
     /// The custom (primary) client is preferred unless `prefer_ncspot` is set. Either way, the
     /// other client goes first while it would be available sooner than a rate-limited preferred one.
+    /// A `429` is reported instead of being retried through a client that is itself rate limited,
+    /// which would only wait out a second delay before failing as well.
     async fn route_request<'a, F, Fut>(
         &'a self,
         method: &str,
@@ -305,36 +325,57 @@ impl WebApiClient {
             return request(&self.primary).await;
         };
 
-        let custom = ("custom", &self.primary);
-        let ncspot = ("ncspot", fallback);
+        let (custom_limits, ncspot_limits) = match &self.rate_limits {
+            Some((custom, ncspot)) => (Some(custom), Some(ncspot)),
+            None => (None, None),
+        };
+        let custom = Route {
+            name: "custom",
+            client: &self.primary,
+            limits: custom_limits,
+        };
+        let ncspot = Route {
+            name: "ncspot",
+            client: fallback,
+            limits: ncspot_limits,
+        };
         let (mut first, mut second) = if prefer_ncspot {
             (ncspot, custom)
         } else {
             (custom, ncspot)
         };
-        if let Some((custom_limit, ncspot_limit)) = &self.rate_limits {
-            let (preferred, other) = if prefer_ncspot {
-                (ncspot_limit, custom_limit)
-            } else {
-                (custom_limit, ncspot_limit)
-            };
-            let preferred_remaining = preferred.retry_after_remaining().await;
-            if should_reroute(preferred_remaining, other.retry_after_remaining().await) {
-                tracing::info!(
-                    method,
-                    url,
-                    client = first.0,
-                    remaining_secs = preferred_remaining.unwrap_or_default().as_secs(),
-                    "Spotify client is rate limited; routing request to the {} client",
-                    second.0
-                );
-                std::mem::swap(&mut first, &mut second);
-            }
+
+        let preferred_cooldown = first.cooldown().await;
+        if should_reroute(preferred_cooldown, second.cooldown().await) {
+            tracing::info!(
+                method,
+                url,
+                client = first.name,
+                remaining_secs = preferred_cooldown.unwrap_or_default().as_secs(),
+                "Spotify client is rate limited; routing request to the {} client",
+                second.name
+            );
+            std::mem::swap(&mut first, &mut second);
         }
 
-        match request(first.1).await {
+        match request(first.client).await {
             Err(error) => match Self::fallback_status(&error) {
                 Some(status) => {
+                    let fallback_cooldown = match status {
+                        reqwest::StatusCode::TOO_MANY_REQUESTS => second.cooldown().await,
+                        _ => None,
+                    };
+                    if let Some(remaining) = fallback_cooldown {
+                        tracing::info!(
+                            method,
+                            url,
+                            client = second.name,
+                            remaining_secs = remaining.as_secs(),
+                            "Both Spotify clients are rate limited; not retrying the request"
+                        );
+                        return Err(error);
+                    }
+
                     // a `429` was already raised as an alert by the client's middleware, and other
                     // `4xx` responses are expected for endpoints a client is not allowed to access
                     tracing::info!(
@@ -342,10 +383,10 @@ impl WebApiClient {
                         url,
                         %status,
                         "Spotify Web API request through the {} client failed; retrying with the {} client",
-                        first.0,
-                        second.0
+                        first.name,
+                        second.name
                     );
-                    request(second.1).await
+                    request(second.client).await
                 }
                 None => Err(error),
             },
@@ -415,7 +456,7 @@ impl OAuthClient for WebApiClient {
 #[cfg(test)]
 mod tests {
     use super::{should_reroute, WebApiClient};
-    use crate::client::middleware::SpotifyApiMiddleware;
+    use crate::client::middleware::{SpotifyApiMiddleware, SpotifyApiRequestManager};
     use rspotify::{
         clients::BaseClient, http::Query, AuthCodePkceSpotify, Config, Credentials, OAuth, Token,
     };
@@ -440,8 +481,8 @@ mod tests {
         }
     }
 
-    fn middleware(server: &MockServer, client: &str) -> SpotifyApiMiddleware {
-        SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 1, client).unwrap()
+    fn middleware(server: &MockServer, client: &str, retries: usize) -> SpotifyApiMiddleware {
+        SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), retries, client).unwrap()
     }
 
     async fn client_with_token(
@@ -449,7 +490,7 @@ mod tests {
         with_middleware: bool,
         access_token: &str,
     ) -> AuthCodePkceSpotify {
-        let middleware = with_middleware.then(|| middleware(server, "ncspot"));
+        let middleware = with_middleware.then(|| middleware(server, "ncspot", 1));
         client_with_middleware(server, middleware, access_token).await
     }
 
@@ -485,17 +526,23 @@ mod tests {
         client_with_token(server, with_middleware, "access-token").await
     }
 
-    /// Builds a client whose primary and fallback track each other's rate limits, as in production.
+    /// Builds a client whose primary and fallback track each other's rate limits, as in
+    /// production, along with the request state of each.
     async fn rate_limit_aware_client(
         primary_server: &MockServer,
         fallback_server: &MockServer,
-    ) -> WebApiClient {
-        let primary_middleware = middleware(primary_server, "custom");
-        let fallback_middleware = middleware(fallback_server, "ncspot");
+        retries: usize,
+    ) -> (
+        WebApiClient,
+        SpotifyApiRequestManager,
+        SpotifyApiRequestManager,
+    ) {
+        let primary_middleware = middleware(primary_server, "custom", retries);
+        let fallback_middleware = middleware(fallback_server, "ncspot", retries);
         let primary_requests = primary_middleware.requests();
         let fallback_requests = fallback_middleware.requests();
 
-        WebApiClient::new(
+        let client = WebApiClient::new(
             client_with_middleware(
                 primary_server,
                 Some(primary_middleware.with_peer(fallback_requests.clone())),
@@ -511,7 +558,8 @@ mod tests {
                 .await,
             ),
         )
-        .with_rate_limits(primary_requests, fallback_requests)
+        .with_rate_limits(primary_requests.clone(), fallback_requests.clone());
+        (client, primary_requests, fallback_requests)
     }
 
     #[test]
@@ -541,7 +589,7 @@ mod tests {
             .mount(&fallback_server)
             .await;
 
-        let client = rate_limit_aware_client(&primary_server, &fallback_server).await;
+        let (client, ..) = rate_limit_aware_client(&primary_server, &fallback_server, 1).await;
 
         assert_eq!(
             client.api_get("first", &Query::new()).await.unwrap(),
@@ -570,12 +618,37 @@ mod tests {
             .mount(&fallback_server)
             .await;
 
-        let client = rate_limit_aware_client(&primary_server, &fallback_server).await;
+        let (client, ..) = rate_limit_aware_client(&primary_server, &fallback_server, 1).await;
 
         assert_eq!(
             client.api_get("me/playlists", &Query::new()).await.unwrap(),
             "primary"
         );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_request_is_not_retried_while_the_other_client_waits() {
+        let primary_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+            .expect(1)
+            .mount(&primary_server)
+            .await;
+        let fallback_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("fallback"))
+            .expect(0)
+            .mount(&fallback_server)
+            .await;
+
+        // without retries the primary reports its `429` without waiting out the delay first
+        let (client, _, fallback_requests) =
+            rate_limit_aware_client(&primary_server, &fallback_server, 0).await;
+        fallback_requests
+            .store_retry_after(Duration::from_secs(60))
+            .await;
+
+        assert!(client.api_get("first", &Query::new()).await.is_err());
     }
 
     #[tokio::test]

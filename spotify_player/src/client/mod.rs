@@ -567,8 +567,8 @@ impl AppClient {
                 self.load_user_library(state, FileCacheKey::SavedShows)
                     .await?;
             }
-            ClientRequest::RefreshUserLibrary(keys) => {
-                self.refresh_user_library(state, &keys).await;
+            ClientRequest::RefreshUserLibrary { keys, full } => {
+                self.refresh_user_library(state, &keys, full).await;
             }
             ClientRequest::GetContext(context) => {
                 self.load_context(state, context, false).await?;
@@ -1262,7 +1262,7 @@ impl AppClient {
                         .user_data
                         .saved_tracks
                         .insert(track.id.uri(), track);
-                    Self::store_library_change(state, FileCacheKey::SavedTracks, true)?;
+                    Self::store_library_change(state, FileCacheKey::SavedTracks, true);
                 }
             }
             Item::Album(album) => {
@@ -1274,7 +1274,7 @@ impl AppClient {
                         .await?;
                     // update the in-memory `user_data`
                     state.data.write().user_data.saved_albums.insert(0, album);
-                    Self::store_library_change(state, FileCacheKey::SavedAlbums, true)?;
+                    Self::store_library_change(state, FileCacheKey::SavedAlbums, true);
                 }
             }
             Item::Artist(artist) => {
@@ -1291,7 +1291,7 @@ impl AppClient {
                         .user_data
                         .followed_artists
                         .insert(0, artist);
-                    Self::store_library_change(state, FileCacheKey::FollowedArtists, true)?;
+                    Self::store_library_change(state, FileCacheKey::FollowedArtists, true);
                 }
             }
             Item::Playlist(playlist) => {
@@ -1317,7 +1317,7 @@ impl AppClient {
                             .user_data
                             .playlists
                             .insert(0, PlaylistFolderItem::Playlist(playlist));
-                        Self::store_library_change(state, FileCacheKey::Playlists, true)?;
+                        Self::store_library_change(state, FileCacheKey::Playlists, true);
                     }
                 }
             }
@@ -1330,7 +1330,7 @@ impl AppClient {
                         .await?;
                     // update the in-memory `user_data`
                     state.data.write().user_data.saved_shows.insert(0, show);
-                    Self::store_library_change(state, FileCacheKey::SavedShows, true)?;
+                    Self::store_library_change(state, FileCacheKey::SavedShows, true);
                 }
             }
         }
@@ -1344,7 +1344,7 @@ impl AppClient {
                 let uri = id.uri();
                 self.library_remove([LibraryId::Track(id)]).await?;
                 state.data.write().user_data.saved_tracks.remove(&uri);
-                Self::store_library_change(state, FileCacheKey::SavedTracks, false)?;
+                Self::store_library_change(state, FileCacheKey::SavedTracks, false);
             }
             ItemId::Album(id) => {
                 state
@@ -1354,7 +1354,7 @@ impl AppClient {
                     .saved_albums
                     .retain(|a| a.id != id);
                 self.library_remove([LibraryId::Album(id)]).await?;
-                Self::store_library_change(state, FileCacheKey::SavedAlbums, false)?;
+                Self::store_library_change(state, FileCacheKey::SavedAlbums, false);
             }
             ItemId::Artist(id) => {
                 state
@@ -1364,7 +1364,7 @@ impl AppClient {
                     .followed_artists
                     .retain(|a| a.id != id);
                 self.library_remove([LibraryId::Artist(id)]).await?;
-                Self::store_library_change(state, FileCacheKey::FollowedArtists, false)?;
+                Self::store_library_change(state, FileCacheKey::FollowedArtists, false);
             }
             ItemId::Playlist(id) => {
                 state
@@ -1377,7 +1377,7 @@ impl AppClient {
                         PlaylistFolderItem::Folder(_) => true,
                     });
                 self.library_remove([LibraryId::Playlist(id)]).await?;
-                Self::store_library_change(state, FileCacheKey::Playlists, false)?;
+                Self::store_library_change(state, FileCacheKey::Playlists, false);
             }
             ItemId::Show(id) => {
                 state
@@ -1387,7 +1387,7 @@ impl AppClient {
                     .saved_shows
                     .retain(|s| s.id != id);
                 self.library_remove([LibraryId::Show(id)]).await?;
-                Self::store_library_change(state, FileCacheKey::SavedShows, false)?;
+                Self::store_library_change(state, FileCacheKey::SavedShows, false);
             }
         }
         Ok(())
@@ -1416,7 +1416,7 @@ impl AppClient {
             // The liked tracks context is always rebuilt from `user_data.saved_tracks`,
             // which library changes keep up to date.
             if refresh {
-                self.refresh_user_library(state, &[FileCacheKey::SavedTracks])
+                self.refresh_user_library(state, &[FileCacheKey::SavedTracks], false)
                     .await;
                 return Ok(());
             }
@@ -1893,7 +1893,8 @@ impl AppClient {
             .user_data
             .playlists
             .insert(0, PlaylistFolderItem::Playlist(playlist));
-        Self::store_library_change(state, FileCacheKey::Playlists, true)
+        Self::store_library_change(state, FileCacheKey::Playlists, true);
+        Ok(())
     }
 
     #[cfg(feature = "notify")]

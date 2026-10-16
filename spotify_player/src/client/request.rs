@@ -32,7 +32,11 @@ pub enum ClientRequest {
     GetUserSavedShows,
     GetUserFollowedArtists,
     /// Bring the given library collections up to date, even if a copy is already loaded
-    RefreshUserLibrary(Vec<FileCacheKey>),
+    RefreshUserLibrary {
+        keys: Vec<FileCacheKey>,
+        /// Download each collection as a whole instead of only the items added since its last sync
+        full: bool,
+    },
     GetContext(ContextId),
     /// Download a context again, even if it is cached
     RefreshContext(ContextId),

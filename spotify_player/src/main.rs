@@ -125,7 +125,12 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
 
     // request user data
     client_pub.send(client::ClientRequest::GetCurrentUser)?;
-    client_pub.send(client::ClientRequest::GetUserPlaylists)?;
+    // the playlist list holds the snapshot_id each cached playlist is validated against, so it
+    // is refreshed even when a saved copy exists
+    client_pub.send(client::ClientRequest::RefreshUserLibrary {
+        keys: vec![state::FileCacheKey::Playlists],
+        full: false,
+    })?;
     client_pub.send(client::ClientRequest::GetUserFollowedArtists)?;
     client_pub.send(client::ClientRequest::GetUserSavedAlbums)?;
     client_pub.send(client::ClientRequest::GetContext(state::ContextId::Tracks(

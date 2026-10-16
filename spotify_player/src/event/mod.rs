@@ -689,29 +689,35 @@ fn handle_global_command(
             client_pub.send(ClientRequest::GetCurrentPlayback)?;
         }
         Command::RefreshLibrary => {
-            client_pub.send(ClientRequest::RefreshUserLibrary(
-                LIBRARY_COLLECTIONS.to_vec(),
-            ))?;
+            client_pub.send(ClientRequest::RefreshUserLibrary {
+                keys: LIBRARY_COLLECTIONS.to_vec(),
+                // the whole library is the one place that picks up items removed elsewhere
+                full: true,
+            })?;
         }
         Command::RefreshPlaylists => {
-            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
-                FileCacheKey::Playlists,
-            ]))?;
+            client_pub.send(ClientRequest::RefreshUserLibrary {
+                keys: vec![FileCacheKey::Playlists],
+                full: false,
+            })?;
         }
         Command::RefreshFollowedArtists => {
-            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
-                FileCacheKey::FollowedArtists,
-            ]))?;
+            client_pub.send(ClientRequest::RefreshUserLibrary {
+                keys: vec![FileCacheKey::FollowedArtists],
+                full: false,
+            })?;
         }
         Command::RefreshSavedAlbums => {
-            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
-                FileCacheKey::SavedAlbums,
-            ]))?;
+            client_pub.send(ClientRequest::RefreshUserLibrary {
+                keys: vec![FileCacheKey::SavedAlbums],
+                full: false,
+            })?;
         }
         Command::RefreshSavedShows => {
-            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
-                FileCacheKey::SavedShows,
-            ]))?;
+            client_pub.send(ClientRequest::RefreshUserLibrary {
+                keys: vec![FileCacheKey::SavedShows],
+                full: false,
+            })?;
         }
         Command::RefreshCurrentContext => {
             let id = match ui.current_page() {
@@ -725,9 +731,10 @@ fn handle_global_command(
             }
         }
         Command::RefreshLikedTracks => {
-            client_pub.send(ClientRequest::RefreshUserLibrary(vec![
-                FileCacheKey::SavedTracks,
-            ]))?;
+            client_pub.send(ClientRequest::RefreshUserLibrary {
+                keys: vec![FileCacheKey::SavedTracks],
+                full: false,
+            })?;
         }
         Command::ShowActionsOnCurrentTrack => {
             if let Some(currently_playing) = state.player.read().currently_playing() {
