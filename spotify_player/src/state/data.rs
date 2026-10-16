@@ -1,6 +1,6 @@
 use std::io::{BufReader, BufWriter};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -12,6 +12,7 @@ use super::model::{
     PlaylistFolderNode, SearchResults, Show, Track,
 };
 use super::Lyrics;
+use crate::config;
 use rspotify::model::PlaylistId;
 
 pub type DataReadGuard<'a> = parking_lot::RwLockReadGuard<'a, AppData>;
@@ -25,7 +26,11 @@ pub enum FileCacheKey {
     SavedAlbums,
     SavedTracks,
     LibrarySync,
+    PlaylistPlays,
 }
+
+/// How far apart two plays of the same playlist must be for the saved copy to be rewritten.
+const PLAYLIST_PLAY_WRITE_INTERVAL: u64 = 60;
 
 /// Library collections that can be downloaded from Spotify
 pub const LIBRARY_COLLECTIONS: [FileCacheKey; 5] = [
@@ -82,6 +87,8 @@ pub struct UserData {
     pub saved_shows: Vec<Show>,
     pub saved_albums: Vec<Album>,
     pub saved_tracks: HashMap<String, Track>,
+    /// When each playlist was last seen playing, by URI, newest wins.
+    pub playlist_plays: HashMap<String, u64>,
     /// Library collections already loaded from a file cache or Spotify, which are only
     /// re-downloaded on an explicit refresh.
     pub loaded: HashSet<FileCacheKey>,
@@ -245,6 +252,8 @@ impl UserData {
             saved_shows,
             saved_albums,
             saved_tracks,
+            playlist_plays: load_data_from_file_cache(FileCacheKey::PlaylistPlays, cache_folder)
+                .unwrap_or_default(),
             loaded,
             sync: load_data_from_file_cache(FileCacheKey::LibrarySync, cache_folder)
                 .unwrap_or_default(),
@@ -333,6 +342,37 @@ impl UserData {
         true
     }
 
+    /// Note that the playlist `uri` was playing at `at`, keeping the latest time.
+    ///
+    /// Returns whether the saved copy is worth rewriting, which a playlist that keeps playing
+    /// is not until [`PLAYLIST_PLAY_WRITE_INTERVAL`] has passed.
+    pub fn record_playlist_play(&mut self, uri: String, at: u64) -> bool {
+        match self.playlist_plays.entry(uri) {
+            Entry::Occupied(mut entry) => {
+                let last = *entry.get();
+                if at <= last {
+                    return false;
+                }
+                entry.insert(at);
+                at - last >= PLAYLIST_PLAY_WRITE_INTERVAL
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(at);
+                true
+            }
+        }
+    }
+
+    /// Put the playlists that played most recently first, unless that is turned off.
+    fn order_playlists(&self, items: &mut [&PlaylistFolderItem]) {
+        if config::get_config()
+            .app_config
+            .sort_playlists_by_recently_played
+        {
+            sort_by_recently_played(items, &self.playlist_plays);
+        }
+    }
+
     pub fn is_loaded(&self, key: FileCacheKey) -> bool {
         self.loaded.contains(&key)
     }
@@ -352,6 +392,7 @@ impl UserData {
             FileCacheKey::SavedAlbums => serde_json::to_vec(&self.saved_albums)?,
             FileCacheKey::SavedTracks => serde_json::to_vec(&self.saved_tracks)?,
             FileCacheKey::LibrarySync => serde_json::to_vec(&self.sync)?,
+            FileCacheKey::PlaylistPlays => serde_json::to_vec(&self.playlist_plays)?,
         };
         Ok(Some(data))
     }
@@ -394,7 +435,7 @@ impl UserData {
     /// If `folder_id` is provided, returns items in the given folder id.
     /// Otherwise, returns the all items.
     pub fn modifiable_playlist_items(&self, folder_id: Option<usize>) -> Vec<&PlaylistFolderItem> {
-        match self.user {
+        let mut items = match self.user {
             None => vec![],
             Some(ref u) => self
                 .playlists
@@ -415,19 +456,24 @@ impl UserData {
                     PlaylistFolderItem::Playlist(p) => p.owner.1 == u.id || p.collaborative,
                     PlaylistFolderItem::Folder(_) => true,
                 })
-                .collect(),
-        }
+                .collect::<Vec<_>>(),
+        };
+        self.order_playlists(&mut items);
+        items
     }
 
     /// Get playlists items for the given folder id
     pub fn folder_playlists_items(&self, folder_id: usize) -> Vec<&PlaylistFolderItem> {
-        self.playlists
+        let mut items = self
+            .playlists
             .iter()
             .filter(|item| match item {
                 PlaylistFolderItem::Playlist(p) => p.current_folder_id == folder_id,
                 PlaylistFolderItem::Folder(f) => f.current_id == folder_id,
             })
-            .collect()
+            .collect::<Vec<_>>();
+        self.order_playlists(&mut items);
+        items
     }
 
     /// Check if a track is a liked track
@@ -454,6 +500,20 @@ impl UserData {
             PlaylistFolderItem::Folder(_) => false,
         })
     }
+}
+
+/// Order playlist items with the most recently played first.
+///
+/// Folders keep their place ahead of the playlists, and a playlist that has never been seen
+/// playing keeps Spotify's own order, so the list only changes once something has played.
+fn sort_by_recently_played(items: &mut [&PlaylistFolderItem], plays: &HashMap<String, u64>) {
+    items.sort_by_cached_key(|item| match item {
+        PlaylistFolderItem::Folder(_) => (0, std::cmp::Reverse(0)),
+        PlaylistFolderItem::Playlist(playlist) => (
+            1,
+            std::cmp::Reverse(plays.get(&playlist.id.uri()).copied().unwrap_or_default()),
+        ),
+    });
 }
 
 /// A playlist's tracks as cached on disk; valid while `playlist.snapshot_id` matches Spotify's.
@@ -568,11 +628,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        load_playlist_from_file_cache, remove_playlist_from_file_cache,
+        load_playlist_from_file_cache, remove_playlist_from_file_cache, sort_by_recently_played,
         store_playlist_into_file_cache, write_file_cache, Album, FileCacheKey, Id, LibrarySync,
         MemoryCaches, Playlist, PlaylistFolderItem, SearchCacheEntry, SearchResults, Track,
         UserData,
     };
+    use crate::state::PlaylistFolder;
 
     /// Write a value as a collection's file cache.
     fn store_value<T: serde::Serialize>(key: FileCacheKey, folder: &TempCacheFolder, value: &T) {
@@ -654,6 +715,58 @@ mod tests {
         assert!(load_playlist_from_file_cache(&folder.0, &playlist.id).is_none());
         // removing a playlist that is not cached is not an error
         remove_playlist_from_file_cache(&folder.0, &playlist.id).unwrap();
+    }
+
+    #[test]
+    fn records_the_latest_play_of_a_playlist() {
+        let folder = TempCacheFolder::new("playlist-plays");
+        let mut user_data = UserData::new_from_file_caches(&folder.0);
+        let uri = "spotify:playlist:p".to_string();
+
+        assert!(user_data.record_playlist_play(uri.clone(), 100));
+        // a playlist that keeps playing stays current without rewriting the file every poll
+        assert!(!user_data.record_playlist_play(uri.clone(), 130));
+        assert_eq!(user_data.playlist_plays[&uri], 130);
+        // an older play, from the recently played history, never wins
+        assert!(!user_data.record_playlist_play(uri.clone(), 50));
+        assert_eq!(user_data.playlist_plays[&uri], 130);
+        // the file is worth rewriting again once the interval has passed
+        assert!(user_data.record_playlist_play(uri.clone(), 200));
+
+        store(&user_data, FileCacheKey::PlaylistPlays, &folder);
+        let reloaded = UserData::new_from_file_caches(&folder.0);
+        assert_eq!(reloaded.playlist_plays[&uri], 200);
+    }
+
+    #[test]
+    fn orders_the_playlists_that_played_most_recently_first() {
+        let items = vec![
+            PlaylistFolderItem::Playlist(playlist("old", "v1")),
+            PlaylistFolderItem::Playlist(playlist("never", "v1")),
+            PlaylistFolderItem::Playlist(playlist("new", "v1")),
+            PlaylistFolderItem::Folder(PlaylistFolder {
+                name: "folder".to_string(),
+                current_id: 0,
+                target_id: 1,
+            }),
+        ];
+        let mut items = items.iter().collect::<Vec<_>>();
+        let plays = HashMap::from([
+            (PlaylistId::from_id("old").unwrap().uri(), 10),
+            (PlaylistId::from_id("new").unwrap().uri(), 20),
+        ]);
+
+        sort_by_recently_played(&mut items, &plays);
+
+        let names = items
+            .iter()
+            .map(|item| match item {
+                PlaylistFolderItem::Playlist(playlist) => playlist.name.as_str(),
+                PlaylistFolderItem::Folder(folder) => folder.name.as_str(),
+            })
+            .collect::<Vec<_>>();
+        // the folder keeps its place, and a playlist never seen playing keeps Spotify's order
+        assert_eq!(names, ["folder", "new", "old", "never"]);
     }
 
     #[test]

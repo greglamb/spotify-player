@@ -3,6 +3,7 @@
 
 use anyhow::{Context as _, Result};
 use rspotify::{
+    clients::OAuthClient,
     http::Query,
     model::{Page, PlaylistId, SavedAlbum, SavedTrack},
     prelude::Id,
@@ -250,7 +251,9 @@ impl AppClient {
                 data.user_data.saved_tracks = tracks;
                 data.user_data.sync.insert(key, sync);
             }
-            FileCacheKey::PlaylistFolders | FileCacheKey::LibrarySync => {
+            FileCacheKey::PlaylistFolders
+            | FileCacheKey::LibrarySync
+            | FileCacheKey::PlaylistPlays => {
                 anyhow::bail!("{key:?} cannot be downloaded from Spotify")
             }
         }
@@ -392,6 +395,55 @@ impl AppClient {
         // which would then be mistaken for Spotify's order
         remove_playlist_from_file_cache(&config::get_config().cache_folder, id)
             .with_context(|| format!("remove the cached playlist {}", id.id()))
+    }
+
+    /// Note the playlist that is playing, so the library lists the recent ones first.
+    pub(super) fn record_playlist_play(state: &SharedState) {
+        let Some(crate::state::ContextId::Playlist(id)) = state.player.read().playing_context_id()
+        else {
+            return;
+        };
+
+        let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or_default();
+        let worth_storing = state
+            .data
+            .write()
+            .user_data
+            .record_playlist_play(id.uri(), now);
+
+        if worth_storing {
+            if let Err(err) = Self::store_user_library(state, FileCacheKey::PlaylistPlays) {
+                tracing::error!("Failed to cache the playlist play: {err:#}");
+            }
+        }
+    }
+
+    /// Record the playlists behind the user's recently played tracks, so the library has an
+    /// order to show before anything has played in the app.
+    pub(super) async fn seed_playlist_plays(&self, state: &SharedState) -> Result<()> {
+        let history = self.current_user_recently_played(Some(50), None).await?;
+
+        let mut worth_storing = false;
+        {
+            let mut data = state.data.write();
+            for played in history.items {
+                let Some(context) = played.context else {
+                    continue;
+                };
+                // a context that is not a playlist, an album for instance, fails to parse here
+                let uri = crate::utils::parse_uri(&context.uri);
+                let Ok(id) = PlaylistId::from_uri(&uri) else {
+                    continue;
+                };
+                let at = u64::try_from(played.played_at.timestamp()).unwrap_or_default();
+                worth_storing |= data.user_data.record_playlist_play(id.uri(), at);
+            }
+        }
+
+        if worth_storing {
+            Self::store_user_library(state, FileCacheKey::PlaylistPlays)?;
+        }
+        Ok(())
     }
 
     pub(super) fn liked_tracks_context(state: &SharedState) -> Context {

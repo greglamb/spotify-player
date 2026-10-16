@@ -582,6 +582,9 @@ impl AppClient {
                 self.load_user_library(state, FileCacheKey::SavedShows)
                     .await?;
             }
+            ClientRequest::GetRecentPlaylistPlays => {
+                self.seed_playlist_plays(state).await?;
+            }
             ClientRequest::RefreshUserLibrary { keys, refresh } => {
                 self.refresh_user_library(state, &keys, refresh).await;
             }
@@ -1750,6 +1753,9 @@ impl AppClient {
 
             new_playback
         };
+
+        // outside the lock on the player: the library's order lives in the application's data
+        Self::record_playlist_play(state);
 
         if !new_playback {
             return Ok(());

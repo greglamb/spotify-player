@@ -137,6 +137,7 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
         state::USER_LIKED_TRACKS_ID.to_owned(),
     )))?;
     client_pub.send(client::ClientRequest::GetUserSavedShows)?;
+    client_pub.send(client::ClientRequest::GetRecentPlaylistPlays)?;
 
     // client socket task (for handling CLI commands)
     tokio::task::spawn({

@@ -64,6 +64,8 @@ pub struct AppConfig {
 
     pub log_folder: Option<PathBuf>,
 
+    /// List the playlists that played most recently first, instead of in Spotify's order.
+    pub sort_playlists_by_recently_played: bool,
     /// Show a row of the keys that work on the current page at the bottom of the screen.
     pub enable_shortcut_hints: bool,
     /// Show a dismissible popup for warnings/errors that are otherwise only logged.
@@ -354,6 +356,7 @@ impl Default for AppConfig {
 
             log_folder: None,
 
+            sort_playlists_by_recently_played: true,
             enable_shortcut_hints: true,
             enable_alert_popup: true,
             alert_popup_min_level: AlertLevel::Error,

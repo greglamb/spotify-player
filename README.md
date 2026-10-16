@@ -619,6 +619,8 @@ A playlist's tracks are saved in `playlists/<playlist_id>.json` the first time y
 
 `RefreshCurrentContext` (`U c`) downloads the tracks of the playlist, album, artist or show on the current page again, or of the playing one when no such page is open.
 
+Playlists are listed with the ones played most recently first, in the library and in the playlist popups. Spotify offers no such ordering, so the app keeps its own: it notes the playlist it sees playing, on any device while the app is running, and reads your 50 most recently played tracks at startup for the plays it missed. It is saved in `PlaylistPlays_cache.json` next to the library. A playlist the app has never seen playing keeps Spotify's own position, so an untouched list looks exactly as it does today, and `sort_playlists_by_recently_played = false` restores Spotify's order.
+
 ### Logging
 
 Logs are stored in `$APP_CACHE_FOLDER/spotify-player-*.log`. For debugging or issues, check the backtrace file in `$APP_CACHE_FOLDER/spotify-player-*.backtrace`.

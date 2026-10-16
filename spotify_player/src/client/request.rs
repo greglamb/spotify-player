@@ -44,6 +44,8 @@ pub enum ClientRequest {
     GetUserSavedAlbums,
     GetUserSavedShows,
     GetUserFollowedArtists,
+    /// Note the playlists behind the user's recently played tracks
+    GetRecentPlaylistPlays,
     /// Bring the given library collections up to date, even if a copy is already loaded
     RefreshUserLibrary {
         keys: Vec<FileCacheKey>,
