@@ -129,7 +129,7 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
     // is refreshed even when a saved copy exists
     client_pub.send(client::ClientRequest::RefreshUserLibrary {
         keys: vec![state::FileCacheKey::Playlists],
-        full: false,
+        refresh: client::LibraryRefresh::Startup,
     })?;
     client_pub.send(client::ClientRequest::GetUserFollowedArtists)?;
     client_pub.send(client::ClientRequest::GetUserSavedAlbums)?;

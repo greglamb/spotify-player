@@ -1,7 +1,7 @@
 use std::ops::Mul;
 
 use crate::{
-    client::{ClientRequest, PlayerRequest},
+    client::{ClientRequest, LibraryRefresh, PlayerRequest},
     command::{
         self, construct_artist_actions, Action, ActionContext, ActionTarget, Command,
         CommandOrAction,
@@ -699,32 +699,31 @@ fn handle_global_command(
         Command::RefreshLibrary => {
             client_pub.send(ClientRequest::RefreshUserLibrary {
                 keys: LIBRARY_COLLECTIONS.to_vec(),
-                // the whole library is the one place that picks up items removed elsewhere
-                full: true,
+                refresh: LibraryRefresh::Full,
             })?;
         }
         Command::RefreshPlaylists => {
             client_pub.send(ClientRequest::RefreshUserLibrary {
                 keys: vec![FileCacheKey::Playlists],
-                full: false,
+                refresh: LibraryRefresh::Incremental,
             })?;
         }
         Command::RefreshFollowedArtists => {
             client_pub.send(ClientRequest::RefreshUserLibrary {
                 keys: vec![FileCacheKey::FollowedArtists],
-                full: false,
+                refresh: LibraryRefresh::Incremental,
             })?;
         }
         Command::RefreshSavedAlbums => {
             client_pub.send(ClientRequest::RefreshUserLibrary {
                 keys: vec![FileCacheKey::SavedAlbums],
-                full: false,
+                refresh: LibraryRefresh::Incremental,
             })?;
         }
         Command::RefreshSavedShows => {
             client_pub.send(ClientRequest::RefreshUserLibrary {
                 keys: vec![FileCacheKey::SavedShows],
-                full: false,
+                refresh: LibraryRefresh::Incremental,
             })?;
         }
         Command::RefreshCurrentContext => {
@@ -741,7 +740,7 @@ fn handle_global_command(
         Command::RefreshLikedTracks => {
             client_pub.send(ClientRequest::RefreshUserLibrary {
                 keys: vec![FileCacheKey::SavedTracks],
-                full: false,
+                refresh: LibraryRefresh::Incremental,
             })?;
         }
         Command::ShowActionsOnCurrentTrack => {

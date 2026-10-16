@@ -3,6 +3,19 @@ use crate::state::{
     TrackId,
 };
 
+/// How a library refresh was asked for, which decides how much of a collection is downloaded
+/// and how a failure is reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LibraryRefresh {
+    /// The automatic refresh at startup. Nobody asked for it and the saved copy stands in for
+    /// what cannot be downloaded, so a failure is only written to the log.
+    Startup,
+    /// Only the items added since the last sync, for the collections that record one.
+    Incremental,
+    /// The whole collection, the only way to pick up items removed in another app.
+    Full,
+}
+
 #[derive(Clone, Debug)]
 /// A request that modifies the player's playback
 pub enum PlayerRequest {
@@ -34,8 +47,7 @@ pub enum ClientRequest {
     /// Bring the given library collections up to date, even if a copy is already loaded
     RefreshUserLibrary {
         keys: Vec<FileCacheKey>,
-        /// Download each collection as a whole instead of only the items added since its last sync
-        full: bool,
+        refresh: LibraryRefresh,
     },
     GetContext(ContextId),
     /// Download a context again, even if it is cached

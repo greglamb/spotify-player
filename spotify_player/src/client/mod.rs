@@ -582,8 +582,8 @@ impl AppClient {
                 self.load_user_library(state, FileCacheKey::SavedShows)
                     .await?;
             }
-            ClientRequest::RefreshUserLibrary { keys, full } => {
-                self.refresh_user_library(state, &keys, full).await;
+            ClientRequest::RefreshUserLibrary { keys, refresh } => {
+                self.refresh_user_library(state, &keys, refresh).await;
             }
             ClientRequest::GetContext(context) => {
                 self.load_context(state, context, false).await?;
@@ -1436,8 +1436,12 @@ impl AppClient {
             // The liked tracks context is always rebuilt from `user_data.saved_tracks`,
             // which library changes keep up to date.
             if refresh {
-                self.refresh_user_library(state, &[FileCacheKey::SavedTracks], false)
-                    .await;
+                self.refresh_user_library(
+                    state,
+                    &[FileCacheKey::SavedTracks],
+                    request::LibraryRefresh::Incremental,
+                )
+                .await;
                 return Ok(());
             }
         } else if !refresh && state.data.read().caches.context.contains_key(&uri) {

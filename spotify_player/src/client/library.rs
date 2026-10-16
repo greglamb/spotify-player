@@ -8,7 +8,7 @@ use rspotify::{
     prelude::Id,
 };
 
-use super::AppClient;
+use super::{request::LibraryRefresh, AppClient};
 use crate::{
     config,
     state::{
@@ -48,19 +48,24 @@ impl AppClient {
 
     /// Bring library collections up to date, so changes made outside the app become visible.
     ///
-    /// `full` downloads each collection as a whole instead of only the items added since its
-    /// last sync, which is the only way to pick up items removed in another app.
+    /// `refresh` decides how much of each collection is downloaded and how a failure is
+    /// reported; see [`LibraryRefresh`].
     pub(super) async fn refresh_user_library(
         &self,
         state: &SharedState,
         keys: &[FileCacheKey],
-        full: bool,
+        refresh: LibraryRefresh,
     ) {
-        tracing::info!("Refreshing the user's library: {keys:?} (full: {full})");
+        tracing::info!("Refreshing the user's library: {keys:?} ({refresh:?})");
+        let full = refresh == LibraryRefresh::Full;
         for &key in keys {
             // one failed collection must not prevent refreshing the others
             if let Err(err) = self.refresh_library_collection(state, key, full).await {
-                tracing::error!("Failed to refresh {key:?}: {err:#}");
+                if refresh == LibraryRefresh::Startup {
+                    tracing::info!("Failed to refresh {key:?}, keeping the saved copy: {err:#}");
+                } else {
+                    tracing::error!("Failed to refresh {key:?}: {err:#}");
+                }
             }
         }
 
