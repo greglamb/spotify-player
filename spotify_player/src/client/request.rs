@@ -34,6 +34,8 @@ pub enum ClientRequest {
     /// Bring the given library collections up to date, even if a copy is already loaded
     RefreshUserLibrary(Vec<FileCacheKey>),
     GetContext(ContextId),
+    /// Download a context again, even if it is cached
+    RefreshContext(ContextId),
     GetCurrentPlayback,
     Search(String),
     AddPlayableToQueue(PlayableId<'static>),

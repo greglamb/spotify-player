@@ -48,6 +48,7 @@ pub enum Command {
     RefreshSavedAlbums,
     RefreshSavedShows,
     RefreshLikedTracks,
+    RefreshCurrentContext,
 
     #[cfg(feature = "streaming")]
     RestartIntegratedClient,
@@ -348,6 +349,9 @@ impl Command {
             Self::RefreshSavedAlbums => "refresh the user's saved albums",
             Self::RefreshSavedShows => "refresh the user's saved shows",
             Self::RefreshLikedTracks => "refresh the user's liked tracks",
+            Self::RefreshCurrentContext => {
+                "refresh the tracks of the playlist/album/artist/show on the current page, or of the playing context"
+            }
             Self::ShowActionsOnSelectedItem => "open a popup showing actions on a selected item",
             Self::ShowActionsOnCurrentTrack => "open a popup showing actions on the current track",
             Self::ShowActionsOnCurrentContext => "open a popup showing actions on the current context",

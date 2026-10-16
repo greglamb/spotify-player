@@ -555,49 +555,10 @@ impl AppClient {
                 self.refresh_user_library(state, &keys).await;
             }
             ClientRequest::GetContext(context) => {
-                let uri = context.uri();
-                // The liked tracks context is always rebuilt from `user_data.saved_tracks`,
-                // which library changes keep up to date.
-                let cache_miss = uri != USER_LIKED_TRACKS_URI
-                    && !state.data.read().caches.context.contains_key(&uri);
-                let is_liked = uri == USER_LIKED_TRACKS_URI;
-                if cache_miss || is_liked {
-                    let ctx = match context {
-                        ContextId::Playlist(playlist_id) => {
-                            self.playlist_context(playlist_id).await?
-                        }
-                        ContextId::Album(album_id) => self.album_context(album_id).await?,
-                        ContextId::Artist(artist_id) => self.artist_context(artist_id).await?,
-                        ContextId::Tracks(tracks_id) => match tracks_id.uri.as_str() {
-                            USER_TOP_TRACKS_URI => Context::Tracks {
-                                tracks: self.current_user_top_tracks().await?,
-                                desc: "User's top tracks".to_string(),
-                            },
-                            USER_RECENTLY_PLAYED_TRACKS_URI => Context::Tracks {
-                                tracks: self.current_user_recently_played_tracks().await?,
-                                desc: "User's recently played tracks".to_string(),
-                            },
-                            USER_LIKED_TRACKS_URI => {
-                                self.load_user_library(state, FileCacheKey::SavedTracks)
-                                    .await?;
-                                Self::liked_tracks_context(state)
-                            }
-                            u if u.starts_with("radio:") => Context::Tracks {
-                                tracks: self.radio_tracks(u["radio:".len()..].to_string()).await?,
-                                desc: tracks_id.kind.clone(),
-                            },
-                            uri => anyhow::bail!("unsupported Tracks context: {uri}"),
-                        },
-                        ContextId::Show(show_id) => self.show_context(show_id).await?,
-                    };
-
-                    state
-                        .data
-                        .write()
-                        .caches
-                        .context
-                        .insert(uri, ctx, *TTL_CACHE_DURATION);
-                }
+                self.load_context(state, context, false).await?;
+            }
+            ClientRequest::RefreshContext(context) => {
+                self.load_context(state, context, true).await?;
             }
             ClientRequest::Search(query) => match self.search(&query).await {
                 Ok(results) => state.data.write().caches.complete_search(query, results),
@@ -1425,6 +1386,63 @@ impl AppClient {
                 .await?,
         )
         .context("convert FullTrack into Track")
+    }
+
+    /// Load a context into the memory cache, downloading it again if `refresh` is set even when
+    /// it is already cached.
+    async fn load_context(
+        &self,
+        state: &SharedState,
+        context: ContextId,
+        refresh: bool,
+    ) -> Result<()> {
+        let uri = context.uri();
+        if uri == USER_LIKED_TRACKS_URI {
+            // The liked tracks context is always rebuilt from `user_data.saved_tracks`,
+            // which library changes keep up to date.
+            if refresh {
+                self.refresh_user_library(state, &[FileCacheKey::SavedTracks])
+                    .await;
+                return Ok(());
+            }
+        } else if !refresh && state.data.read().caches.context.contains_key(&uri) {
+            return Ok(());
+        }
+
+        let ctx = match context {
+            ContextId::Playlist(playlist_id) => self.playlist_context(playlist_id).await?,
+            ContextId::Album(album_id) => self.album_context(album_id).await?,
+            ContextId::Artist(artist_id) => self.artist_context(artist_id).await?,
+            ContextId::Tracks(tracks_id) => match tracks_id.uri.as_str() {
+                USER_TOP_TRACKS_URI => Context::Tracks {
+                    tracks: self.current_user_top_tracks().await?,
+                    desc: "User's top tracks".to_string(),
+                },
+                USER_RECENTLY_PLAYED_TRACKS_URI => Context::Tracks {
+                    tracks: self.current_user_recently_played_tracks().await?,
+                    desc: "User's recently played tracks".to_string(),
+                },
+                USER_LIKED_TRACKS_URI => {
+                    self.load_user_library(state, FileCacheKey::SavedTracks)
+                        .await?;
+                    Self::liked_tracks_context(state)
+                }
+                u if u.starts_with("radio:") => Context::Tracks {
+                    tracks: self.radio_tracks(u["radio:".len()..].to_string()).await?,
+                    desc: tracks_id.kind.clone(),
+                },
+                uri => anyhow::bail!("unsupported Tracks context: {uri}"),
+            },
+            ContextId::Show(show_id) => self.show_context(show_id).await?,
+        };
+
+        state
+            .data
+            .write()
+            .caches
+            .context
+            .insert(uri, ctx, *TTL_CACHE_DURATION);
+        Ok(())
     }
 
     /// Get a playlist context data

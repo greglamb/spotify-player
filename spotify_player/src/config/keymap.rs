@@ -116,6 +116,10 @@ impl Default for KeymapConfig {
                     command: Command::RefreshLikedTracks,
                 },
                 Keymap {
+                    key_sequence: "U c".into(),
+                    command: Command::RefreshCurrentContext,
+                },
+                Keymap {
                     key_sequence: "/".into(),
                     command: Command::Search,
                 },

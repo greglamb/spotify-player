@@ -713,6 +713,17 @@ fn handle_global_command(
                 FileCacheKey::SavedShows,
             ]))?;
         }
+        Command::RefreshCurrentContext => {
+            let id = match ui.current_page() {
+                PageState::Context { id: Some(id), .. } => Some(id.clone()),
+                _ => state.player.read().playing_context_id(),
+            };
+            if let Some(id) = id {
+                client_pub.send(ClientRequest::RefreshContext(id))?;
+            } else {
+                tracing::warn!("No playlist, album, artist or show to refresh");
+            }
+        }
         Command::RefreshLikedTracks => {
             client_pub.send(ClientRequest::RefreshUserLibrary(vec![
                 FileCacheKey::SavedTracks,
