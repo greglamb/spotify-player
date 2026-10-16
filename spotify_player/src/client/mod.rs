@@ -116,13 +116,24 @@ pub fn new_api_client() -> Result<WebApiClient> {
     let primary_cache_file = format!("{id}_token.json");
 
     if id == auth::NCSPOT_CLIENT_ID {
+        // the app writes `client_id` into its config file with ncspot's ID as the default, so
+        // the option being present says nothing: report the value and how to replace it
+        let last_step = match configs.app_config.client_id_command {
+            Some(_) => "make `client_id_command` output the new ID".to_string(),
+            None => format!(
+                "set `client_id` in {} to the new ID",
+                config::app_config_path()
+            ),
+        };
         let hint = format!(
-            "set `client_id` in {} to use your own Spotify API quota",
-            config::app_config_path()
+            "create an app at https://developer.spotify.com/dashboard, add {} as a redirect URI, \
+             then {last_step}",
+            configs.app_config.login_redirect_uri
         );
         tracing::warn!(
+            client_id = %id,
             hint = hint.as_str(),
-            "No custom client ID is configured; all Spotify Web API requests use the shared ncspot client ID"
+            "The Spotify client ID in use is ncspot's shared ID, not one of your own, so every Web API request draws on a quota shared with other users"
         );
         let config = build_config(&primary_cache_file);
         let middleware = SpotifyApiMiddleware::new(
