@@ -2,7 +2,7 @@
 
 > **This is a personal fork** of [aome510/spotify-player](https://github.com/aome510/spotify-player), kept in sync with upstream and carrying a few changes for my own use:
 >
-> - [Alert popups](#alerts) for warnings and errors that upstream only writes to the log, including Spotify Web API rate limiting (`429 Too Many Requests`).
+> - [Alert popups](#alerts) for failures that upstream only writes to the log, such as a Spotify Web API request no client ID could serve.
 > - Its own [Homebrew tap](#homebrew-this-fork) and release binaries, built for macOS (Apple silicon), Linux (x86_64/ARM64) and Windows.
 >
 > Fork releases are tagged `v<upstream version>-gh<n>` (for example `v0.25.1-gh1`) and `spotify_player --version` reports that tag. For the upstream project, see the link above — issues with anything in this fork belong here, not there.
@@ -400,7 +400,7 @@ cargo install spotify_player --features notify
 
 ### Alerts
 
-Warnings and errors are logged rather than shown, so failures the application recovers from — a rate-limited request, a failed API call, a dropped session — can leave the UI unresponsive with no visible explanation. When `enable_alert_popup` is set (the default), such a log event also raises a dismissible **alert popup** in the middle of the screen, showing the level, source, message, and the event's details (for a `429 Too Many Requests`, the client IDs that were tried and the request).
+Failures are logged rather than shown, so a failed API call, a dropped session or a rate-limited request can leave the UI unresponsive with no visible explanation. When `enable_alert_popup` is set (the default), such a log event also raises a dismissible **alert popup** in the middle of the screen, showing the level, source, message, and the event's details (for a `429 Too Many Requests`, the client IDs that were tried and the request).
 
 While an alert is shown:
 
@@ -415,7 +415,7 @@ Any other key is passed through to the application, so playback and navigation k
 
 Repeats of the same event are coalesced into a single alert with a count instead of stacking up, and at most 20 alerts are kept. Dismissed alerts are not lost: every alert comes from a log event, so it remains on the logs page (`g o`) and in the [log file](#logging).
 
-Use `alert_popup_min_level` to only be alerted about errors (`Error`) instead of warnings and errors (`Warn`, the default), or `enable_alert_popup = false` to turn the popup off entirely. Alerts follow the logging setup, so `RUST_LOG=off` also disables them.
+Only errors raise a popup by default, because a warning is something the application recovered from: a `429` the other client ID served, a retry that then succeeded, a refresh that kept its saved copy. Set `alert_popup_min_level = "Warn"` to be told about those as well, which also brings back the startup notice about the shared ncspot client ID, or `enable_alert_popup = false` to turn the popup off entirely. Warnings remain on the logs page (`g o`) either way, and alerts follow the logging setup, so `RUST_LOG=off` disables them.
 
 ### Mouse support
 

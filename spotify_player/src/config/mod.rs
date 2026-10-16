@@ -68,7 +68,8 @@ pub struct AppConfig {
     pub enable_shortcut_hints: bool,
     /// Show a dismissible popup for warnings/errors that are otherwise only logged.
     pub enable_alert_popup: bool,
-    /// Minimum severity of a log event that raises an alert popup.
+    /// Minimum severity of a log event that raises an alert popup. A warning is something the
+    /// application recovered from, so only an error interrupts the user by default.
     pub alert_popup_min_level: AlertLevel,
 
     pub player_event_hook_command: Option<Command>,
@@ -355,7 +356,7 @@ impl Default for AppConfig {
 
             enable_shortcut_hints: true,
             enable_alert_popup: true,
-            alert_popup_min_level: AlertLevel::Warn,
+            alert_popup_min_level: AlertLevel::Error,
 
             tracks_playback_limit: 50,
             top_tracks_limit: 100,

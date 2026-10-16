@@ -37,7 +37,7 @@ spotify_player -o device.volume=80 -o theme=dracula
 | `client_port`                     | Port for the application's client to handle CLI commands.                                           | `8080`                                                                 |
 | `enable_shortcut_hints`           | Show a row of the keys that work on the current page at the bottom of the screen.                   | `true`                                                                 |
 | `enable_alert_popup`              | Show a dismissible popup for warnings/errors that are otherwise only logged.                        | `true`                                                                 |
-| `alert_popup_min_level`           | Minimum severity raising an alert popup: `Warn` or `Error`.                                         | `Warn`                                                                 |
+| `alert_popup_min_level`           | Minimum severity raising an alert popup: `Warn` or `Error`.                                         | `Error`                                                                |
 | `log_folder`                      | Path to store log files.                                                                            | `None`                                                                 |
 | `tracks_playback_limit`           | Maximum number of tracks in a playback session.                                                     | `50`                                                                   |
 | `top_tracks_limit`                | Maximum number of tracks returned on the user's top tracks page.                                    | `100`                                                                  |
