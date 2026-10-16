@@ -165,7 +165,7 @@ impl ItemId {
 ///
 /// Release builds stamp the git tag into `SPOTIFY_PLAYER_VERSION` (see the CD workflow)
 /// so a fork's releases are identifiable; other builds report the crate version.
-const VERSION: &str = match option_env!("SPOTIFY_PLAYER_VERSION") {
+pub const VERSION: &str = match option_env!("SPOTIFY_PLAYER_VERSION") {
     Some(version) => version,
     None => env!("CARGO_PKG_VERSION"),
 };

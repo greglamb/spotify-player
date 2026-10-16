@@ -479,7 +479,7 @@ spotify_player playback start track --id $(spotify_player search "$query" | jq '
 
 Press `?` or `C-h` to open the shortcut help page (default for `OpenCommandHelp`).
 
-The bottom row of the screen lists the keys that work where you are: the command palette and the help page first, then what the current page or popup supports. It follows your own keymap, and `enable_shortcut_hints = false` turns it off. After a prefix key such as `g` or `U`, a `Shortcuts` box also lists the keys that can follow it.
+The bottom row of the screen lists the keys that work where you are: the command palette and the help page first, then what the current page or popup supports, with the version you are running at the right end. It follows your own keymap, and `enable_shortcut_hints = false` turns it off. After a prefix key such as `g` or `U`, a `Shortcuts` box also lists the keys that can follow it.
 
 Press `F1` to open the command palette (default for `OpenCommandPalette`). Type to search every command by name, key sequence or description, `up`/`down` to move, `enter` to run the selected command, `esc` to close. It shows the keys each command is bound to, so it doubles as a reminder of your own keymap.
 

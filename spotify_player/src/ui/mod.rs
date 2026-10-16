@@ -174,19 +174,29 @@ fn render_shortcut_hints(frame: &mut Frame, ui: &UIStateGuard, rect: Rect) -> Re
     }
 
     let chunks = Layout::vertical([Constraint::Fill(0), Constraint::Length(1)]).split(rect);
+
+    // the version keeps the right end of the row, the hints take what is left of it
+    // with the leading `v`, it reads as the release tag it was built from
+    let version = format!("v{} ", crate::cli::VERSION);
+    let version_width = u16::try_from(version.chars().count()).unwrap_or(u16::MAX);
+    let row = Layout::horizontal([Constraint::Fill(0), Constraint::Length(version_width)])
+        .split(chunks[1]);
+
     let hints = shortcut_hints(
         &configs.keymap_config,
         ui.popup.as_ref(),
         ui.current_page().page_type(),
-        usize::from(chunks[1].width.saturating_sub(1)),
+        usize::from(row[0].width.saturating_sub(1)),
     );
 
+    let style = Style::default().add_modifier(Modifier::DIM);
     frame.render_widget(
-        Paragraph::new(Line::styled(
-            format!(" {hints}"),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-        chunks[1],
+        Paragraph::new(Line::styled(format!(" {hints}"), style)),
+        row[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled(version, style)).alignment(Alignment::Right),
+        row[1],
     );
     chunks[0]
 }
