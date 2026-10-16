@@ -203,12 +203,13 @@ fn render_shortcut_hints(frame: &mut Frame, ui: &UIStateGuard, rect: Rect) -> Re
 
 /// The commands worth hinting at, for the popup in the way or else for the current page.
 ///
-/// The command palette and the help page come first, so that a narrow screen keeps the two
-/// that lead everywhere else.
+/// The command palette, the help page and the library come first, so that a narrow screen
+/// keeps the three that lead everywhere else.
 fn hint_commands(popup: Option<&PopupState>, page: PageType) -> Vec<(Command, &'static str)> {
     let mut hints = vec![
         (Command::OpenCommandPalette, "commands"),
         (Command::OpenCommandHelp, "help"),
+        (Command::LibraryPage, "library"),
     ];
 
     if let Some(popup) = popup {
@@ -343,7 +344,10 @@ mod tests {
     fn the_shortcut_hints_lead_with_the_palette_and_the_help_page() {
         let hints = shortcut_hints(&KeymapConfig::default(), None, PageType::Library, 200);
 
-        assert!(hints.starts_with("[f1] commands  [?] help"), "{hints}");
+        assert!(
+            hints.starts_with("[f1] commands  [?] help  [g l] library"),
+            "{hints}"
+        );
         assert!(hints.ends_with("[q] quit"), "{hints}");
     }
 
