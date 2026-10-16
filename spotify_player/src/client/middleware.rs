@@ -366,7 +366,8 @@ impl SpotifyApiMiddleware {
         for attempt in 0..=self.requests.max_retries {
             self.requests.wait_for_retry_after().await;
             if attempt > 0 {
-                tracing::warn!(
+                // the retry may well succeed, so this is for the log, not for an alert
+                tracing::info!(
                     %url,
                     retry = attempt,
                     max_retries = self.requests.max_retries,
