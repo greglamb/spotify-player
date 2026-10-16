@@ -1,5 +1,6 @@
 use crate::state::{
-    AlbumId, Category, ContextId, Item, ItemId, PlayableId, Playback, PlaylistId, TrackId,
+    AlbumId, Category, ContextId, FileCacheKey, Item, ItemId, PlayableId, Playback, PlaylistId,
+    TrackId,
 };
 
 #[derive(Clone, Debug)]
@@ -30,7 +31,11 @@ pub enum ClientRequest {
     GetUserSavedAlbums,
     GetUserSavedShows,
     GetUserFollowedArtists,
+    /// Bring the given library collections up to date, even if a copy is already loaded
+    RefreshUserLibrary(Vec<FileCacheKey>),
     GetContext(ContextId),
+    /// Download a context again, even if it is cached
+    RefreshContext(ContextId),
     GetCurrentPlayback,
     Search(String),
     AddPlayableToQueue(PlayableId<'static>),

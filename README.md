@@ -33,6 +33,7 @@
 - [Commands](#commands)
 - [Configurations](#configurations)
 - [Caches](#caches)
+  - [Library cache](#library-cache)
   - [Logging](#logging)
 - [Acknowledgement](#acknowledgement)
 
@@ -482,6 +483,7 @@ Press `?` or `C-h` to open the shortcut help page (default for `OpenCommandHelp`
 
 - Use the `Search` command to search in the shortcut help page and other pages.
 - `RefreshPlayback` manually updates playback status.
+- `RefreshLibrary` and the other `Refresh*` commands update your library, which is otherwise loaded from its [saved copy](#library-cache).
 - `RestartIntegratedClient` is useful for switching audio devices without restarting the app.
 
 List of supported commands:
@@ -509,6 +511,13 @@ List of supported commands:
 | `SelectLastOrScrollToBottom`    | select the last item in a list/table or scroll to the bottom                                       | `G`, `end`         |
 | `ChooseSelected`                | choose the selected item                                                                           | `enter`            |
 | `RefreshPlayback`               | manually refresh the current playback                                                              | `r`                |
+| `RefreshLibrary`                | refresh the user's whole library (playlists, followed artists, saved albums/shows, liked tracks)   | `U U`              |
+| `RefreshPlaylists`              | refresh the user's playlists                                                                       | `U p`              |
+| `RefreshFollowedArtists`        | refresh the user's followed artists                                                                | `U a`              |
+| `RefreshSavedAlbums`            | refresh the user's saved albums                                                                    | `U A`              |
+| `RefreshSavedShows`             | refresh the user's saved shows                                                                     | `U s`              |
+| `RefreshLikedTracks`            | refresh the user's liked tracks                                                                    | `U y`              |
+| `RefreshCurrentContext`         | refresh the tracks of the playlist/album/artist/show on the current page, or of the playing one    | `U c`              |
 | `RestartIntegratedClient`       | restart the integrated client (`streaming` feature only)                                           | `R`                |
 | `ShowActionsOnSelectedItem`     | open a popup showing actions on a selected item                                                    | `g a`, `C-space`   |
 | `ShowActionsOnCurrentTrack`     | open a popup showing actions on the current track                                                  | `a`                |
@@ -594,6 +603,16 @@ See [configuration documentation](https://github.com/aome510/spotify-player/blob
 ## Caches
 
 By default, cache files are stored in `$HOME/.cache/spotify-player` (logs, credentials, audio cache, etc.). Change this with `-C <FOLDER_PATH>` or `--cache-folder <FOLDER_PATH>`.
+
+### Library cache
+
+Your library (playlists, followed artists, saved albums and shows, liked tracks) is saved in `*_cache.json` files. Each part with a saved copy is used as is at startup and on the library pages instead of being downloaded again, so large libraries don't use up the [API quota](#client-id-and-rate-limits) on every launch; only missing parts are downloaded. Changes made in `spotify_player` update the saved copy.
+
+To pick up changes made in other Spotify apps, refresh the library: all of it with `RefreshLibrary` (`U U`), or one part with `RefreshPlaylists` (`U p`), `RefreshFollowedArtists` (`U a`), `RefreshSavedAlbums` (`U A`), `RefreshSavedShows` (`U s`) or `RefreshLikedTracks` (`U y`). `RefreshPlaylists` refreshes only your list of playlists (names, owners, folders), not their tracks. Liked tracks and saved albums refresh incrementally: only items added since the last refresh are downloaded, usually a single request. If Spotify's item count shows other changes, such as tracks unliked in another app, that part is downloaded in full instead. Delete the cache files to force a full download on the next launch.
+
+A playlist's tracks are saved in `playlists/<playlist_id>.json` the first time you open it. Reopening it, even after a restart, reuses that copy while it matches the playlist's version (its `snapshot_id`) in your playlist list, so an unchanged playlist costs no requests. After `RefreshPlaylists` (`U p`) picks up new versions, only the playlists that changed are downloaded again, when you next open them. Playlists outside your library are checked with one small request instead. Editing a playlist, in the app or with the `playlist` CLI commands, discards its saved copy.
+
+`RefreshCurrentContext` (`U c`) downloads the tracks of the playlist, album, artist or show on the current page again, or of the playing one when no such page is open.
 
 ### Logging
 

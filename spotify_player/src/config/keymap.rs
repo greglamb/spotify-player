@@ -92,6 +92,34 @@ impl Default for KeymapConfig {
                     command: Command::RefreshPlayback,
                 },
                 Keymap {
+                    key_sequence: "U U".into(),
+                    command: Command::RefreshLibrary,
+                },
+                Keymap {
+                    key_sequence: "U p".into(),
+                    command: Command::RefreshPlaylists,
+                },
+                Keymap {
+                    key_sequence: "U a".into(),
+                    command: Command::RefreshFollowedArtists,
+                },
+                Keymap {
+                    key_sequence: "U A".into(),
+                    command: Command::RefreshSavedAlbums,
+                },
+                Keymap {
+                    key_sequence: "U s".into(),
+                    command: Command::RefreshSavedShows,
+                },
+                Keymap {
+                    key_sequence: "U y".into(),
+                    command: Command::RefreshLikedTracks,
+                },
+                Keymap {
+                    key_sequence: "U c".into(),
+                    command: Command::RefreshCurrentContext,
+                },
+                Keymap {
                     key_sequence: "/".into(),
                     command: Command::Search,
                 },
