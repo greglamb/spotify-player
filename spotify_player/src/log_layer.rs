@@ -9,6 +9,9 @@ use crate::{
     state::{Alert, AlertQueue},
 };
 
+/// Fields the `log` crate's bridge adds to every event it forwards.
+const LOG_BRIDGE_FIELDS: [&str; 4] = ["log.target", "log.module_path", "log.file", "log.line"];
+
 pub struct BufferLayer {
     buffer: Arc<Mutex<VecDeque<String>>>,
     max_lines: usize,
@@ -30,12 +33,11 @@ impl<S: Subscriber> Layer<S> for BufferLayer {
         event.record(&mut visitor);
 
         let level = event.metadata().level();
-        let target = event.metadata().target();
         let mut line = format!(
             "{} {:>5} {}: {}",
             chrono::Local::now().format("%H:%M:%S"),
             level,
-            target,
+            visitor.source(event.metadata()),
             visitor.message
         );
         for (name, value) in &visitor.fields {
@@ -84,13 +86,16 @@ impl<S: Subscriber> Layer<S> for AlertLayer {
             return;
         }
 
+        let target = visitor.source(event.metadata());
+        // the popup names the source on its own line, so the bridge's copy of it is noise
+        visitor
+            .fields
+            .retain(|(name, _)| !LOG_BRIDGE_FIELDS.contains(&name.as_str()));
+
         // must not log while holding the lock: this layer would then deadlock on itself
-        self.alerts.lock().push(Alert::new(
-            level,
-            event.metadata().target().to_string(),
-            visitor.message,
-            visitor.fields,
-        ));
+        self.alerts
+            .lock()
+            .push(Alert::new(level, target, visitor.message, visitor.fields));
     }
 }
 
@@ -101,6 +106,17 @@ struct EventVisitor {
 }
 
 impl EventVisitor {
+    /// The module the event came from.
+    ///
+    /// An event bridged from the `log` crate is recorded with the target `log` and names its
+    /// real source in a `log.target` field, which is the one worth showing.
+    fn source(&self, metadata: &tracing::Metadata<'_>) -> String {
+        self.fields
+            .iter()
+            .find(|(name, _)| name == "log.target")
+            .map_or_else(|| metadata.target().to_string(), |(_, value)| value.clone())
+    }
+
     fn record(&mut self, field: &tracing::field::Field, value: String) {
         if field.name() == "message" {
             self.message = value;
@@ -172,6 +188,22 @@ mod tests {
                 ("retry_after_secs".to_string(), "30".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn names_the_module_a_bridged_log_event_came_from() {
+        let alerts = alerts_from(AlertLevel::Warn, || {
+            tracing::warn!(
+                log.target = "librespot_connect::state::context",
+                log.line = 168,
+                "couldn't load context info"
+            );
+        });
+
+        let alerts = alerts.lock();
+        let alert = alerts.current().expect("one alert");
+        assert_eq!(alert.target, "librespot_connect::state::context");
+        assert!(alert.fields.is_empty(), "{:?}", alert.fields);
     }
 
     #[test]
