@@ -131,6 +131,9 @@ pub fn new_api_client() -> Result<WebApiClient> {
             configs.app_config.login_redirect_uri
         );
         tracing::warn!(
+            // a shared quota is a configuration problem the user should be told about once,
+            // even when only errors raise a popup
+            alert = true,
             client_id = %id,
             hint = hint.as_str(),
             "The Spotify client ID in use is ncspot's shared ID, not one of your own, so every Web API request draws on a quota shared with other users"

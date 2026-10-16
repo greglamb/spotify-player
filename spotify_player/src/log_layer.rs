@@ -9,6 +9,9 @@ use crate::{
     state::{Alert, AlertQueue},
 };
 
+/// Field marking an event as worth a popup whatever the configured level.
+const ALERT_FIELD: &str = "alert";
+
 /// Fields the `log` crate's bridge adds to every event it forwards.
 const LOG_BRIDGE_FIELDS: [&str; 4] = ["log.target", "log.module_path", "log.file", "log.line"];
 
@@ -76,13 +79,19 @@ impl<S: Subscriber> Layer<S> for AlertLayer {
             tracing::Level::WARN => AlertLevel::Warn,
             _ => return,
         };
-        if level.severity() < self.min_level.severity() {
-            return;
-        }
 
         let mut visitor = EventVisitor::default();
         event.record(&mut visitor);
         if visitor.message.is_empty() {
+            return;
+        }
+
+        // how bad an event is and whether it is worth interrupting the user are two different
+        // questions, so an event can mark itself as one to show whatever the configured level
+        let always_alert = visitor
+            .take_field(ALERT_FIELD)
+            .is_some_and(|value| value == "true");
+        if !always_alert && level.severity() < self.min_level.severity() {
             return;
         }
 
@@ -115,6 +124,12 @@ impl EventVisitor {
             .iter()
             .find(|(name, _)| name == "log.target")
             .map_or_else(|| metadata.target().to_string(), |(_, value)| value.clone())
+    }
+
+    /// Removes the field `name`, returning the value it held.
+    fn take_field(&mut self, name: &str) -> Option<String> {
+        let index = self.fields.iter().position(|(field, _)| field == name)?;
+        Some(self.fields.remove(index).1)
     }
 
     fn record(&mut self, field: &tracing::field::Field, value: String) {
@@ -204,6 +219,24 @@ mod tests {
         let alert = alerts.current().expect("one alert");
         assert_eq!(alert.target, "librespot_connect::state::context");
         assert!(alert.fields.is_empty(), "{:?}", alert.fields);
+    }
+
+    #[test]
+    fn raises_an_event_marked_as_an_alert_below_the_configured_level() {
+        let alerts = alerts_from(AlertLevel::Error, || {
+            tracing::warn!(alert = true, client_id = "shared", "Worth knowing about");
+            tracing::warn!("An ordinary warning");
+        });
+
+        let alerts = alerts.lock();
+        assert_eq!(alerts.len(), 1);
+        let alert = alerts.current().expect("one alert");
+        assert_eq!(alert.message, "Worth knowing about");
+        // the marker is not worth showing in the popup, the field it came with is
+        assert_eq!(
+            alert.fields,
+            vec![("client_id".to_string(), "shared".to_string())]
+        );
     }
 
     #[test]
