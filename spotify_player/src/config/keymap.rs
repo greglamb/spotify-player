@@ -1,3 +1,5 @@
+use std::collections::{btree_map::Entry, BTreeMap};
+
 use crate::{
     command::{Action, ActionTarget, Command, CommandOrAction},
     key::{Key, KeySequence},
@@ -243,6 +245,10 @@ impl Default for KeymapConfig {
                 Keymap {
                     key_sequence: "C-h".into(),
                     command: Command::OpenCommandHelp,
+                },
+                Keymap {
+                    key_sequence: "f1".into(),
+                    command: Command::OpenCommandPalette,
                 },
                 Keymap {
                     key_sequence: "q".into(),
@@ -505,5 +511,95 @@ impl From<&str> for KeySequence {
     /// representation of a `KeySequence`.
     fn from(s: &str) -> Self {
         Self::from_str(s).unwrap_or_else(|| panic!("invalid key sequence {s}"))
+    }
+}
+
+/// A command the command palette can run, with the key sequences bound to it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PaletteCommand {
+    pub command: Command,
+    /// The command's key sequences, comma separated, or empty when it has none
+    pub keys: String,
+}
+
+impl std::fmt::Display for PaletteCommand {
+    /// The text the palette's filter matches against: the command's name, keys and description.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?} {} {}",
+            self.command,
+            self.keys,
+            self.command.desc()
+        )
+    }
+}
+
+impl KeymapConfig {
+    /// Every command this keymap binds, ordered by the `Command` enum, for the command palette.
+    ///
+    /// A command bound to several key sequences appears once, listing all of them.
+    pub fn palette_commands(&self) -> Vec<PaletteCommand> {
+        let mut keys: BTreeMap<Command, String> = BTreeMap::new();
+        for keymap in self
+            .keymaps
+            .iter()
+            .filter(|keymap| keymap.include_in_help_screen())
+        {
+            match keys.entry(keymap.command) {
+                Entry::Vacant(entry) => {
+                    entry.insert(keymap.key_sequence.to_string());
+                }
+                Entry::Occupied(mut entry) => {
+                    let keys = format!("{}, {}", entry.get(), keymap.key_sequence);
+                    *entry.get_mut() = keys;
+                }
+            }
+        }
+
+        keys.into_iter()
+            .map(|(command, keys)| PaletteCommand { command, keys })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, KeymapConfig};
+
+    #[test]
+    fn the_palette_lists_every_bound_command_once() {
+        let commands = KeymapConfig::default().palette_commands();
+
+        let palette = commands
+            .iter()
+            .find(|c| c.command == Command::OpenCommandPalette)
+            .expect("the palette command is bound");
+        assert_eq!(palette.keys, "f1");
+
+        // a command with several bindings is listed once, with all of them
+        let next = commands
+            .iter()
+            .filter(|c| c.command == Command::SelectNextOrScrollDown)
+            .collect::<Vec<_>>();
+        assert_eq!(next.len(), 1);
+        assert!(next[0].keys.contains("down"), "{}", next[0].keys);
+        assert!(next[0].keys.contains('j'), "{}", next[0].keys);
+
+        assert!(commands.iter().all(|c| c.command != Command::None));
+    }
+
+    #[test]
+    fn a_palette_command_is_searchable_by_name_keys_and_description() {
+        let commands = KeymapConfig::default().palette_commands();
+        let shown = commands
+            .iter()
+            .find(|c| c.command == Command::RefreshPlayback)
+            .expect("the command is bound")
+            .to_string();
+
+        assert!(shown.contains("RefreshPlayback"), "{shown}");
+        assert!(shown.contains('r'), "{shown}");
+        assert!(shown.contains("manually refresh"), "{shown}");
     }
 }

@@ -29,6 +29,7 @@ pub enum Command {
 
     Quit,
     OpenCommandHelp,
+    OpenCommandPalette,
     ClosePopup,
 
     SelectNextOrScrollDown,
@@ -375,6 +376,7 @@ impl Command {
             Self::BrowsePage => "go to the browse page",
             Self::Queue => "go to the queue page",
             Self::OpenCommandHelp => "go to the command help page",
+            Self::OpenCommandPalette => "open the command palette to search for and run a command",
             Self::PreviousPage => "go to the previous page",
             Self::OpenSpotifyLinkFromClipboard => "open a Spotify link from clipboard",
             Self::SortTrackByTitle => "sort the track table (if any) by track's title",

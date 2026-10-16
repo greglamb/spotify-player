@@ -151,6 +151,9 @@ fn render_application(frame: &mut Frame, state: &SharedState, ui: &mut UIStateGu
 
     render_main_layout(is_active, frame, state, ui, rect);
 
+    // the command palette floats above the page it runs a command on
+    popup::render_command_palette_popup(frame, ui, content_rect);
+
     // render the alert popup last so it appears on top of the main layout,
     // but within the area left by the playback window to avoid cover image artifacts
     popup::render_alert_popup(frame, state, ui, content_rect);

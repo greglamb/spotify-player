@@ -479,6 +479,8 @@ spotify_player playback start track --id $(spotify_player search "$query" | jq '
 
 Press `?` or `C-h` to open the shortcut help page (default for `OpenCommandHelp`).
 
+Press `F1` to open the command palette (default for `OpenCommandPalette`). Type to search every command by name, key sequence or description, `up`/`down` to move, `enter` to run the selected command, `esc` to close. It shows the keys each command is bound to, so it doubles as a reminder of your own keymap.
+
 **Tips**:
 
 - Use the `Search` command to search in the shortcut help page and other pages.
@@ -541,6 +543,7 @@ List of supported commands:
 | `BrowsePage`                    | go to the browse page                                                                              | `g b`              |
 | `Queue`                         | go to the queue page                                                                               | `z`                |
 | `OpenCommandHelp`               | go to the command help page                                                                        | `?`, `C-h`         |
+| `OpenCommandPalette`            | open the command palette to search for and run a command                                           | `F1`               |
 | `PreviousPage`                  | go to the previous page                                                                            | `backspace`, `C-q` |
 | `OpenLogs`                      | go the the application logs page                                                                   | `g o`              |
 | `OpenSpotifyLinkFromClipboard`  | open a Spotify link from clipboard                                                                 | `O`                |

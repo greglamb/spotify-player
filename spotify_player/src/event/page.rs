@@ -21,17 +21,9 @@ pub fn handle_key_sequence_for_page(
         .keymap_config
         .find_command_or_action_from_key_sequence(key_sequence)
     {
-        Some(CommandOrAction::Command(command)) => match page_type {
-            PageType::Search => anyhow::bail!("page search type should already be handled!"),
-            PageType::Library => handle_command_for_library_page(command, client_pub, ui, state),
-            PageType::Context => handle_command_for_context_page(command, client_pub, ui, state),
-            PageType::Browse => handle_command_for_browse_page(command, client_pub, ui, state),
-            // lyrics page doesn't support any commands
-            PageType::Lyrics => Ok(false),
-            PageType::Queue => Ok(handle_command_for_queue_page(command, ui)),
-            PageType::CommandHelp => Ok(handle_command_for_command_help_page(command, ui)),
-            PageType::Logs => Ok(handle_command_for_logs_page(command, ui)),
-        },
+        Some(CommandOrAction::Command(command)) => {
+            handle_command_for_page(command, client_pub, state, ui)
+        }
         Some(CommandOrAction::Action(action, ActionTarget::SelectedItem)) => match page_type {
             PageType::Search => anyhow::bail!("page search type should already be handled!"),
             PageType::Library => handle_action_for_library_page(action, client_pub, ui, state),
@@ -42,6 +34,28 @@ pub fn handle_key_sequence_for_page(
             _ => Ok(false),
         },
         _ => Ok(false),
+    }
+}
+
+/// Handle a command for the current page, whatever triggered it.
+///
+/// A command can also come from the command palette instead of a key sequence, which is why the
+/// search page - the one page that needs the raw keys - reports every command as unhandled.
+pub fn handle_command_for_page(
+    command: Command,
+    client_pub: &flume::Sender<ClientRequest>,
+    state: &SharedState,
+    ui: &mut UIStateGuard,
+) -> Result<bool> {
+    match ui.current_page().page_type() {
+        // the search page needs the raw keys, and the lyrics page supports no commands
+        PageType::Search | PageType::Lyrics => Ok(false),
+        PageType::Library => handle_command_for_library_page(command, client_pub, ui, state),
+        PageType::Context => handle_command_for_context_page(command, client_pub, ui, state),
+        PageType::Browse => handle_command_for_browse_page(command, client_pub, ui, state),
+        PageType::Queue => Ok(handle_command_for_queue_page(command, ui)),
+        PageType::CommandHelp => Ok(handle_command_for_command_help_page(command, ui)),
+        PageType::Logs => Ok(handle_command_for_logs_page(command, ui)),
     }
 }
 

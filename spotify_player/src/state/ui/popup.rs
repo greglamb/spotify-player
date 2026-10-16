@@ -20,6 +20,10 @@ pub enum PopupState {
     Search {
         query: String,
     },
+    CommandPalette {
+        query: String,
+        list_state: ListState,
+    },
     UserPlaylistList(PlaylistPopupAction, ListState),
     UserFollowedArtistList(ListState),
     UserSavedAlbumList(ListState),
@@ -93,7 +97,8 @@ impl PopupState {
             | Self::UserSavedAlbumList(list_state)
             | Self::ArtistList(.., list_state)
             | Self::ThemeList(.., list_state)
-            | Self::ActionList(.., list_state) => Some(list_state),
+            | Self::ActionList(.., list_state)
+            | Self::CommandPalette { list_state, .. } => Some(list_state),
             Self::Search { .. } | Self::PlaylistCreate { .. } | Self::ConfirmAction { .. } => None,
         }
     }
@@ -107,7 +112,8 @@ impl PopupState {
             | Self::UserSavedAlbumList(list_state)
             | Self::ArtistList(.., list_state)
             | Self::ThemeList(.., list_state)
-            | Self::ActionList(.., list_state) => Some(list_state),
+            | Self::ActionList(.., list_state)
+            | Self::CommandPalette { list_state, .. } => Some(list_state),
             Self::Search { .. } | Self::PlaylistCreate { .. } | Self::ConfirmAction { .. } => None,
         }
     }

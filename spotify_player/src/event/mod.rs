@@ -682,6 +682,14 @@ fn handle_global_command(
         Command::OpenCommandHelp => {
             ui.new_page(PageState::CommandHelp { scroll_offset: 0 });
         }
+        Command::OpenCommandPalette => {
+            let mut list_state = ListState::default();
+            list_state.select(Some(0));
+            ui.popup = Some(PopupState::CommandPalette {
+                query: String::new(),
+                list_state,
+            });
+        }
         Command::OpenLogs => {
             ui.new_page(PageState::Logs { scroll_offset: 0 });
         }

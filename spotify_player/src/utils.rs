@@ -95,3 +95,27 @@ pub fn filtered_items_from_query<'a, T: std::fmt::Display>(
         })
         .collect::<Vec<_>>()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::filtered_items_from_query;
+
+    /// The command palette and the playlist popups show their whole list before anything is
+    /// typed, which only holds while an empty query matches every item.
+    #[test]
+    fn an_empty_query_keeps_every_item() {
+        let items = ["RefreshPlayback".to_string(), "Quit".to_string()];
+
+        assert_eq!(filtered_items_from_query("", &items).len(), 2);
+    }
+
+    #[test]
+    fn a_query_keeps_the_items_it_matches() {
+        let items = ["RefreshPlayback".to_string(), "Quit".to_string()];
+
+        let filtered = filtered_items_from_query("refresh", &items);
+
+        assert_eq!(filtered, vec![&items[0]]);
+        assert!(filtered_items_from_query("zqx", &items).is_empty());
+    }
+}

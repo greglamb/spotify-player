@@ -10,6 +10,10 @@ const SHORTCUT_TABLE_N_COLUMNS: usize = 3;
 const SHORTCUT_TABLE_CONSTRAINS: [Constraint; SHORTCUT_TABLE_N_COLUMNS] =
     [Constraint::Ratio(1, 3); 3];
 
+const MIN_PALETTE_POPUP_WIDTH: u16 = 40;
+const MIN_PALETTE_POPUP_HEIGHT: u16 = 8;
+const MAX_PALETTE_POPUP_WIDTH: u16 = 100;
+
 const MIN_ALERT_POPUP_WIDTH: u16 = 24;
 const MIN_ALERT_POPUP_HEIGHT: u16 = 5;
 const MAX_ALERT_POPUP_WIDTH: u16 = 80;
@@ -66,6 +70,7 @@ pub fn render_popup(
                 );
                 (chunks[0], true)
             }
+            PopupState::CommandPalette { .. } => (rect, false),
             PopupState::Search { query } => {
                 let chunks =
                     Layout::vertical([Constraint::Fill(0), Constraint::Length(3)]).split(rect);
@@ -227,6 +232,103 @@ pub fn render_popup(
             }
         },
     }
+}
+
+/// Render the command palette: a searchable list of every command, its keys and what it does.
+///
+/// Like the alert popup it is drawn on top of the main layout, as a centered overlay, so the
+/// page underneath keeps its full size.
+pub fn render_command_palette_popup(frame: &mut Frame, ui: &mut UIStateGuard, rect: Rect) {
+    let Some(PopupState::CommandPalette { query, .. }) = &ui.popup else {
+        return;
+    };
+    let query = query.clone();
+    let Some(area) = command_palette_area(rect) else {
+        return;
+    };
+
+    let palette = config::get_config().keymap_config.palette_commands();
+    let commands = filtered_items_from_query(&query, &palette);
+
+    // pad the first two columns so the names, keys and descriptions line up
+    let name_width = commands
+        .iter()
+        .map(|entry| format!("{:?}", entry.command).len())
+        .max()
+        .unwrap_or_default();
+    let keys_width = commands
+        .iter()
+        .map(|entry| entry.keys.len())
+        .max()
+        .unwrap_or_default();
+    let items = commands
+        .iter()
+        .map(|entry| {
+            (
+                format!(
+                    "{:name_width$}  {:keys_width$}  {}",
+                    format!("{:?}", entry.command),
+                    entry.keys,
+                    entry.command.desc()
+                ),
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+    let n_commands = items.len();
+
+    // `Clear` resets the cells to the terminal's default style, so re-apply the app's style
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(ui.theme.app()), area);
+
+    let chunks = Layout::vertical([Constraint::Length(3), Constraint::Fill(0)]).split(area);
+    let input_rect = construct_and_render_block(
+        "Command Palette (type to search, [enter] run, [esc] close)",
+        &ui.theme,
+        Borders::ALL,
+        frame,
+        chunks[0],
+    );
+    frame.render_widget(Paragraph::new(format!("> {query}")), input_rect);
+
+    let list_rect = construct_and_render_block(
+        &format!("{n_commands} commands"),
+        &ui.theme,
+        Borders::ALL,
+        frame,
+        chunks[1],
+    );
+    let selected = ui.popup.as_ref().and_then(PopupState::list_selected);
+    let (list, len) = utils::construct_list_widget(&ui.theme, items, true, selected);
+    utils::render_list_window(
+        frame,
+        list,
+        list_rect,
+        len,
+        ui.popup
+            .as_mut()
+            .and_then(PopupState::list_state_mut)
+            .expect("the command palette has a list state"),
+    );
+}
+
+/// The centered area the command palette is drawn in, or `None` when `rect` is too small for it.
+fn command_palette_area(rect: Rect) -> Option<Rect> {
+    if rect.width < MIN_PALETTE_POPUP_WIDTH || rect.height < MIN_PALETTE_POPUP_HEIGHT {
+        return None;
+    }
+
+    // four fifths of the width and two thirds of the height, without overflowing a `u16`
+    let width =
+        (rect.width - rect.width / 5).clamp(MIN_PALETTE_POPUP_WIDTH, MAX_PALETTE_POPUP_WIDTH);
+    let height = std::cmp::max(rect.height - rect.height / 3, MIN_PALETTE_POPUP_HEIGHT);
+
+    Some(Rect {
+        x: rect.x + (rect.width - width) / 2,
+        y: rect.y + (rect.height - height) / 2,
+        width,
+        height,
+    })
 }
 
 /// Render the alert popup showing the oldest pending alert, if any.
@@ -405,7 +507,40 @@ pub fn render_shortcut_help_popup(frame: &mut Frame, ui: &mut UIStateGuard, rect
 
 #[cfg(test)]
 mod tests {
-    use super::{alert_popup_area, Line, Rect, MAX_ALERT_POPUP_WIDTH};
+    use super::{
+        alert_popup_area, command_palette_area, Line, Rect, MAX_ALERT_POPUP_WIDTH,
+        MAX_PALETTE_POPUP_WIDTH, MIN_PALETTE_POPUP_HEIGHT, MIN_PALETTE_POPUP_WIDTH,
+    };
+
+    #[test]
+    fn centers_the_command_palette() {
+        let rect = Rect::new(0, 0, 100, 30);
+
+        let area = command_palette_area(rect).expect("the area fits the palette");
+
+        assert_eq!(area.width, MAX_PALETTE_POPUP_WIDTH.min(100 - 100 / 5));
+        assert_eq!(area.height, 30 - 30 / 3);
+        assert_eq!(area.x, (rect.width - area.width) / 2);
+        assert_eq!(area.y, (rect.height - area.height) / 2);
+    }
+
+    #[test]
+    fn keeps_the_command_palette_inside_a_small_area() {
+        let rect = Rect::new(2, 1, MIN_PALETTE_POPUP_WIDTH, MIN_PALETTE_POPUP_HEIGHT);
+
+        let area = command_palette_area(rect).expect("the area fits the palette");
+
+        assert_eq!(area.width, MIN_PALETTE_POPUP_WIDTH);
+        assert_eq!(area.height, MIN_PALETTE_POPUP_HEIGHT);
+        assert!(area.x >= rect.x && area.x + area.width <= rect.x + rect.width);
+        assert!(area.y >= rect.y && area.y + area.height <= rect.y + rect.height);
+    }
+
+    #[test]
+    fn hides_the_command_palette_when_the_area_is_too_small() {
+        assert!(command_palette_area(Rect::new(0, 0, MIN_PALETTE_POPUP_WIDTH - 1, 40)).is_none());
+        assert!(command_palette_area(Rect::new(0, 0, 80, MIN_PALETTE_POPUP_HEIGHT - 1)).is_none());
+    }
 
     #[test]
     fn centers_the_alert_popup() {

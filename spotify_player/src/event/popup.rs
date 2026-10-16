@@ -34,6 +34,11 @@ pub fn handle_key_sequence_for_popup(
                 return Ok(true);
             }
         }
+        PopupState::CommandPalette { .. } => {
+            if handle_key_sequence_for_command_palette_popup(key_sequence, ui) {
+                return Ok(true);
+            }
+        }
         PopupState::ConfirmAction { action, .. } => {
             return handle_key_sequence_for_confirm_popup(
                 key_sequence,
@@ -232,6 +237,33 @@ pub fn handle_key_sequence_for_popup(
                 )
             }
         },
+        PopupState::CommandPalette { query, .. } => {
+            let query = query.clone();
+            let palette = config::get_config().keymap_config.palette_commands();
+            let commands = filtered_items_from_query(&query, &palette)
+                .into_iter()
+                .map(|entry| entry.command)
+                .collect::<Vec<_>>();
+
+            handle_command_for_list_popup(
+                command,
+                ui,
+                commands.len(),
+                |_, _| {},
+                |ui: &mut UIStateGuard, id: usize| -> Result<()> {
+                    let chosen = commands[id];
+                    // the palette closes first: the command it runs may open a popup of its own
+                    ui.popup = None;
+                    if !super::page::handle_command_for_page(chosen, client_pub, state, ui)? {
+                        super::handle_global_command(chosen, client_pub, state, ui, None)?;
+                    }
+                    Ok(())
+                },
+                |ui: &mut UIStateGuard| {
+                    ui.popup = None;
+                },
+            )
+        }
         PopupState::UserFollowedArtistList(_) => {
             let artist_uris = state
                 .data
@@ -572,6 +604,48 @@ pub fn handle_item_action(
 }
 
 /// Handle key sequence for playlist search popup (AddTrack/AddEpisode)
+/// Handle the command palette's text input.
+///
+/// Only printable characters and backspace are consumed, so the list commands bound to `up`,
+/// `down`, `enter` and `esc` keep working while the query is typed.
+fn handle_key_sequence_for_command_palette_popup(
+    key_sequence: &KeySequence,
+    ui: &mut UIStateGuard,
+) -> bool {
+    let [Key::None(key)] = key_sequence.keys.as_slice() else {
+        return false;
+    };
+
+    let close = {
+        let Some(PopupState::CommandPalette { query, list_state }) = &mut ui.popup else {
+            return false;
+        };
+        match key {
+            crossterm::event::KeyCode::Char(c) => {
+                query.push(*c);
+                // the filtered list changed, so select its first row again
+                list_state.select(Some(0));
+                false
+            }
+            crossterm::event::KeyCode::Backspace => {
+                if query.is_empty() {
+                    true
+                } else {
+                    query.pop();
+                    list_state.select(Some(0));
+                    false
+                }
+            }
+            _ => return false,
+        }
+    };
+
+    if close {
+        ui.popup = None;
+    }
+    true
+}
+
 fn handle_key_sequence_for_playlist_search_popup(
     key_sequence: &KeySequence,
     ui: &mut UIStateGuard,
