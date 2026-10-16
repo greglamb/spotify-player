@@ -7,7 +7,12 @@ use rspotify::{
     AuthCodePkceSpotify, ClientError, ClientResult, Config, Credentials, OAuth, Token,
 };
 use serde_json::Value;
-use std::{fmt, future::Future, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    future::Future,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use super::middleware::SpotifyApiRequestManager;
 use crate::token;
@@ -223,6 +228,18 @@ fn should_reroute(preferred: Option<Duration>, other: Option<Duration>) -> bool 
     }
 }
 
+/// Advice attached to a rate-limit warning when the app has only the shared ncspot client ID.
+static ONE_CLIENT_RATE_LIMIT_HINT: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "requests are paused until the Retry-After delay elapses; setting `client_id` in {} \
+         gives the app its own Spotify API quota",
+        crate::config::app_config_path()
+    )
+});
+/// Advice attached to a rate-limit warning when neither client ID can serve the request.
+const BOTH_CLIENTS_RATE_LIMIT_HINT: &str = "both Spotify client IDs are rate limited; requests \
+     are paused until a Retry-After delay elapses";
+
 /// One of the two Spotify clients a request can be routed to.
 #[derive(Clone, Copy)]
 struct Route<'a> {
@@ -310,6 +327,9 @@ impl WebApiClient {
     /// other client goes first while it would be available sooner than a rate-limited preferred one.
     /// A `429` is reported instead of being retried through a client that is itself rate limited,
     /// which would only wait out a second delay before failing as well.
+    ///
+    /// A rate limit is warned about, and so raises an alert, only once no client ID is left to
+    /// serve the request; every `429` on its own is recorded in the log by the middleware.
     async fn route_request<'a, F, Fut>(
         &'a self,
         method: &str,
@@ -322,7 +342,11 @@ impl WebApiClient {
         Fut: Future<Output = ClientResult<String>>,
     {
         let Some(fallback) = &self.fallback else {
-            return request(&self.primary).await;
+            let result = request(&self.primary).await;
+            if Self::is_rate_limited(&result) {
+                Self::warn_rate_limited(method, url, "ncspot", &ONE_CLIENT_RATE_LIMIT_HINT);
+            }
+            return result;
         };
 
         let (custom_limits, ncspot_limits) = match &self.rate_limits {
@@ -358,40 +382,71 @@ impl WebApiClient {
             std::mem::swap(&mut first, &mut second);
         }
 
-        match request(first.client).await {
-            Err(error) => match Self::fallback_status(&error) {
-                Some(status) => {
-                    let fallback_cooldown = match status {
-                        reqwest::StatusCode::TOO_MANY_REQUESTS => second.cooldown().await,
-                        _ => None,
-                    };
-                    if let Some(remaining) = fallback_cooldown {
-                        tracing::info!(
-                            method,
-                            url,
-                            client = second.name,
-                            remaining_secs = remaining.as_secs(),
-                            "Both Spotify clients are rate limited; not retrying the request"
-                        );
-                        return Err(error);
-                    }
+        let error = match request(first.client).await {
+            Err(error) => error,
+            result => return result,
+        };
+        let Some(status) = Self::fallback_status(&error) else {
+            return Err(error);
+        };
+        let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+        let clients = format!("{} and {}", first.name, second.name);
 
-                    // a `429` was already raised as an alert by the client's middleware, and other
-                    // `4xx` responses are expected for endpoints a client is not allowed to access
-                    tracing::info!(
-                        method,
-                        url,
-                        %status,
-                        "Spotify Web API request through the {} client failed; retrying with the {} client",
-                        first.name,
-                        second.name
-                    );
-                    request(second.client).await
-                }
-                None => Err(error),
-            },
-            result => result,
+        let fallback_cooldown = if rate_limited {
+            second.cooldown().await
+        } else {
+            None
+        };
+        if let Some(remaining) = fallback_cooldown {
+            tracing::info!(
+                method,
+                url,
+                client = second.name,
+                remaining_secs = remaining.as_secs(),
+                "Both Spotify clients are rate limited; not retrying the request"
+            );
+            Self::warn_rate_limited(method, url, &clients, BOTH_CLIENTS_RATE_LIMIT_HINT);
+            return Err(error);
         }
+
+        // `4xx` responses are expected for endpoints a client ID is not allowed to access, and
+        // a `429` is still served by the other client, so neither is worth an alert yet
+        tracing::info!(
+            method,
+            url,
+            %status,
+            "Spotify Web API request through the {} client failed; retrying with the {} client",
+            first.name,
+            second.name
+        );
+        let result = request(second.client).await;
+        if result.is_err() && (rate_limited || Self::is_rate_limited(&result)) {
+            Self::warn_rate_limited(method, url, &clients, BOTH_CLIENTS_RATE_LIMIT_HINT);
+        }
+        result
+    }
+
+    /// Whether a failed request was rejected with `429 Too Many Requests`.
+    fn is_rate_limited(result: &ClientResult<String>) -> bool {
+        result
+            .as_ref()
+            .err()
+            .and_then(Self::fallback_status)
+            .is_some_and(|status| status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+    }
+
+    /// Warn that a rate-limited request has no client ID left to serve it.
+    ///
+    /// Rate limiting is otherwise invisible - requests are delayed and retried in the
+    /// background, which looks like an unresponsive application - so this raises an alert.
+    fn warn_rate_limited(method: &str, url: &str, clients: &str, hint: &str) {
+        tracing::warn!(
+            method,
+            url,
+            clients,
+            hint,
+            "Spotify Web API rate limit encountered"
+        );
     }
 }
 
@@ -455,12 +510,19 @@ impl OAuthClient for WebApiClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_reroute, WebApiClient};
-    use crate::client::middleware::{SpotifyApiMiddleware, SpotifyApiRequestManager};
+    use super::{should_reroute, WebApiClient, ONE_CLIENT_RATE_LIMIT_HINT};
+    use crate::{
+        client::middleware::{SpotifyApiMiddleware, SpotifyApiRequestManager},
+        config::AlertLevel,
+        log_layer::AlertLayer,
+        state::AlertQueue,
+    };
+    use parking_lot::Mutex;
     use rspotify::{
         clients::BaseClient, http::Query, AuthCodePkceSpotify, Config, Credentials, OAuth, Token,
     };
-    use std::{collections::HashSet, sync::Arc, time::Duration};
+    use std::{collections::HashSet, future::Future, sync::Arc, time::Duration};
+    use tracing_subscriber::layer::SubscriberExt;
     use wiremock::{
         matchers::{header, method, path},
         Mock, MockServer, Request, Respond, ResponseTemplate,
@@ -623,6 +685,82 @@ mod tests {
         assert_eq!(
             client.api_get("me/playlists", &Query::new()).await.unwrap(),
             "primary"
+        );
+    }
+
+    /// Run `request` against a subscriber that collects the alerts it raises, as the
+    /// application's alert popup would show them.
+    async fn alerts_from<T>(request: impl Future<Output = T>) -> (T, Arc<Mutex<AlertQueue>>) {
+        let alerts = Arc::new(Mutex::new(AlertQueue::default()));
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::registry()
+                .with(AlertLayer::new(Arc::clone(&alerts), AlertLevel::Warn)),
+        );
+
+        let guard = tracing::dispatcher::set_default(&dispatch);
+        let result = request.await;
+        drop(guard);
+
+        (result, alerts)
+    }
+
+    #[test]
+    fn the_rate_limit_hint_names_the_config_file() {
+        let hint = ONE_CLIENT_RATE_LIMIT_HINT.as_str();
+
+        assert!(hint.contains("client_id"), "{hint}");
+        // the path is the file's name only while the configurations are not initialized
+        assert!(hint.contains(&crate::config::app_config_path()), "{hint}");
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_the_other_client_serves_raises_no_alert() {
+        let primary_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+            .mount(&primary_server)
+            .await;
+        let fallback_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("fallback"))
+            .mount(&fallback_server)
+            .await;
+        let (client, ..) = rate_limit_aware_client(&primary_server, &fallback_server, 0).await;
+
+        let (result, alerts) = alerts_from(client.api_get("first", &Query::new())).await;
+
+        assert_eq!(result.unwrap(), "fallback");
+        assert!(alerts.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_on_both_clients_raises_one_alert() {
+        let primary_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+            .mount(&primary_server)
+            .await;
+        let fallback_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+            .mount(&fallback_server)
+            .await;
+        let (client, ..) = rate_limit_aware_client(&primary_server, &fallback_server, 0).await;
+
+        let (result, alerts) = alerts_from(client.api_get("first", &Query::new())).await;
+
+        assert!(result.is_err());
+        let alerts = alerts.lock();
+        assert_eq!(alerts.len(), 1);
+        let alert = alerts.current().expect("one alert");
+        assert_eq!(alert.message, "Spotify Web API rate limit encountered");
+        assert!(
+            alert
+                .fields
+                .iter()
+                .any(|(name, value)| name == "clients" && value == "custom and ncspot"),
+            "{:?}",
+            alert.fields
         );
     }
 

@@ -274,7 +274,7 @@ When a custom `client_id` is configured, `spotify-player` sends most Web API req
 
 Both clients remember `Retry-After` durations. While one client waits out a delay, requests go straight to the other client, and the usual order resumes once the delay elapses. A rate-limited GET request falls back to the other client immediately. When both clients are rate limited, the request waits for whichever is free sooner and is retried there (up to two times by default); the `429` is then reported instead of being retried through the other, equally throttled, client. Mutation requests are never delayed or retried. Configure the retry count with `api_rate_limit_retries`; see the [configuration documentation](https://github.com/aome510/spotify-player/blob/master/docs/config.md) for details.
 
-Rate limiting is otherwise invisible — requests are delayed or retried in the background, which looks like an unresponsive application. Every `429` therefore raises an [alert popup](#alerts) naming the throttled client (`ncspot` or `custom`), the request, and the `Retry-After` delay. A custom client's `429` is retried through ncspot, so playback usually continues; a `429` on ncspot means the shared quota is exhausted and is a good reason to [use a custom client ID](#using-a-custom-client-id). Falling back for other `4xx` responses is routine and is logged without an alert.
+Rate limiting is otherwise invisible — requests are delayed or retried in the background, which looks like an unresponsive application. An [alert popup](#alerts) therefore reports a `429` once no client ID is left to serve the request, naming the clients that were tried. A `429` the other client ID still serves is only written to the log, as is falling back for any other `4xx` response, so a rate limit the app recovers from does not interrupt you. A `429` on both client IDs means both quotas are exhausted; with only ncspot's shared client ID it is a good reason to [use a custom client ID](#using-a-custom-client-id).
 
 ### Using a custom client ID
 
@@ -400,7 +400,7 @@ cargo install spotify_player --features notify
 
 ### Alerts
 
-Warnings and errors are logged rather than shown, so failures the application recovers from — a rate-limited request, a failed API call, a dropped session — can leave the UI unresponsive with no visible explanation. When `enable_alert_popup` is set (the default), such a log event also raises a dismissible **alert popup** in the middle of the screen, showing the level, source, message, and the event's details (for a `429 Too Many Requests`, the client ID whose quota is exhausted, the request, and the `Retry-After` delay).
+Warnings and errors are logged rather than shown, so failures the application recovers from — a rate-limited request, a failed API call, a dropped session — can leave the UI unresponsive with no visible explanation. When `enable_alert_popup` is set (the default), such a log event also raises a dismissible **alert popup** in the middle of the screen, showing the level, source, message, and the event's details (for a `429 Too Many Requests`, the client IDs that were tried and the request).
 
 While an alert is shown:
 

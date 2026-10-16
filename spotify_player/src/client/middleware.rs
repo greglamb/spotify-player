@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use http::Extensions;
 use reqwest::{
@@ -16,21 +12,6 @@ use tokio::{
 };
 
 const GET_DEDUPLICATION_WINDOW: Duration = Duration::from_secs(1);
-
-/// Actionable context attached to rate-limit warnings, shown in the alert popup.
-static RATE_LIMIT_HINT: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "requests are paused until the Retry-After delay elapses; setting `client_id` in {} \
-         gives the app its own Spotify API quota",
-        crate::config::app_config_path()
-    )
-});
-/// [`RATE_LIMIT_HINT`] for a client that has a peer client to route requests to.
-const RATE_LIMIT_PEER_HINT: &str =
-    "requests are routed to the other Spotify client ID until the Retry-After delay elapses";
-/// [`RATE_LIMIT_HINT`] for a client whose peer client is rate limited as well.
-const RATE_LIMIT_BOTH_HINT: &str = "both Spotify client IDs are rate limited; requests are \
-     paused until a Retry-After delay elapses";
 
 #[derive(Clone, Debug)]
 struct CachedResponse {
@@ -268,21 +249,6 @@ impl SpotifyApiMiddleware {
         }
     }
 
-    /// The hint attached to a rate-limit warning, naming the recovery the request actually
-    /// gets: another client to route to, a wait on both clients, or no peer at all.
-    async fn rate_limit_hint(&self) -> &'static str {
-        match &self.peer {
-            None => RATE_LIMIT_HINT.as_str(),
-            Some(peer) => {
-                if peer.retry_after_remaining().await.is_none() {
-                    RATE_LIMIT_PEER_HINT
-                } else {
-                    RATE_LIMIT_BOTH_HINT
-                }
-            }
-        }
-    }
-
     /// Returns a normalized key for the given URL that guarantees consistent ordering of query parameters,
     /// used for caching and deduplication of requests.
     fn get_request_key(url: &Url) -> String {
@@ -327,24 +293,22 @@ impl SpotifyApiMiddleware {
         if let Some(retry_after) = retry_after {
             self.requests.store_retry_after(retry_after).await;
         }
-        // resolved before the warning: an `await` inside the macro makes the future `!Send`
-        let hint = self.rate_limit_hint().await;
 
+        // only recorded in the log: the request is usually still served by the other client ID,
+        // and `WebApiClient` warns the user once no client ID can serve it
         if let Some(retry_after) = retry_after {
-            tracing::warn!(
+            tracing::info!(
                 client = %self.client,
                 %method,
                 %url,
                 retry_after_secs = retry_after.as_secs(),
-                hint,
                 "Spotify Web API rate limit encountered"
             );
         } else {
-            tracing::warn!(
+            tracing::info!(
                 client = %self.client,
                 %method,
                 %url,
-                hint,
                 "Spotify Web API rate limit encountered without a valid Retry-After duration"
             );
         }
@@ -464,10 +428,7 @@ impl Middleware for SpotifyApiMiddleware {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        GetRegistration, SharedGetResult, SpotifyApiMiddleware, SpotifyApiRequestManager,
-        RATE_LIMIT_HINT,
-    };
+    use super::{GetRegistration, SharedGetResult, SpotifyApiMiddleware, SpotifyApiRequestManager};
     use reqwest::{header::HeaderValue, StatusCode, Url};
     use reqwest_middleware::ClientBuilder;
     use std::{
@@ -562,15 +523,6 @@ mod tests {
         tokio::time::advance(Duration::from_secs(11)).await;
         waiting.await.unwrap();
         assert_eq!(requests.retry_after_remaining().await, None);
-    }
-
-    #[test]
-    fn the_rate_limit_hint_names_the_config_file() {
-        let hint = RATE_LIMIT_HINT.as_str();
-
-        assert!(hint.contains("client_id"), "{hint}");
-        // the path is the file's name only while the configurations are not initialized
-        assert!(hint.contains(&crate::config::app_config_path()), "{hint}");
     }
 
     #[tokio::test(start_paused = true)]
