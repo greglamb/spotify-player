@@ -16,6 +16,9 @@ const GET_DEDUPLICATION_WINDOW: Duration = Duration::from_secs(1);
 /// Actionable context attached to rate-limit warnings, shown in the alert popup.
 const RATE_LIMIT_HINT: &str = "requests are paused until the Retry-After delay elapses; \
      configuring `client_id` in app.toml gives the app its own Spotify API quota";
+/// [`RATE_LIMIT_HINT`] for a client that has a peer client to route requests to.
+const RATE_LIMIT_PEER_HINT: &str =
+    "requests are routed to the other Spotify client ID until the Retry-After delay elapses";
 
 #[derive(Clone, Debug)]
 struct CachedResponse {
@@ -73,8 +76,9 @@ struct RequestState {
     recent_gets: HashMap<String, RecentGet>,
 }
 
+/// Request state of one Spotify client ID, shared by every clone of its middleware.
 #[derive(Clone, Debug)]
-struct SpotifyApiRequestManager {
+pub(super) struct SpotifyApiRequestManager {
     state: Arc<Mutex<RequestState>>,
     max_retries: usize,
 }
@@ -196,13 +200,15 @@ impl SpotifyApiRequestManager {
         }
     }
 
-    #[cfg(test)]
-    async fn retry_after_remaining(&self) -> Option<Duration> {
+    /// Returns how long requests must still wait for an active `Retry-After` delay, if any.
+    pub(super) async fn retry_after_remaining(&self) -> Option<Duration> {
+        let now = Instant::now();
         self.state
             .lock()
             .await
             .retry_after_until
-            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .filter(|deadline| *deadline > now)
+            .map(|deadline| deadline.saturating_duration_since(now))
     }
 }
 
@@ -213,6 +219,8 @@ pub(super) struct SpotifyApiMiddleware {
     /// so a rate-limit warning names the client whose quota is exhausted.
     client: String,
     requests: SpotifyApiRequestManager,
+    /// Request state of the other client ID that callers fall back to, if any.
+    peer: Option<SpotifyApiRequestManager>,
 }
 
 impl SpotifyApiMiddleware {
@@ -225,7 +233,35 @@ impl SpotifyApiMiddleware {
             api_base_url: Url::parse(api_base_url)?,
             client: client.to_string(),
             requests: SpotifyApiRequestManager::new(max_retries),
+            peer: None,
         })
+    }
+
+    /// Returns this client's request state, shared with the middleware.
+    pub(super) fn requests(&self) -> SpotifyApiRequestManager {
+        self.requests.clone()
+    }
+
+    /// Declares the client that callers fall back to: rate-limited GETs are returned
+    /// immediately instead of retried while `peer` is not rate limited itself.
+    pub(super) fn with_peer(mut self, peer: SpotifyApiRequestManager) -> Self {
+        self.peer = Some(peer);
+        self
+    }
+
+    async fn peer_available(&self) -> bool {
+        match &self.peer {
+            Some(peer) => peer.retry_after_remaining().await.is_none(),
+            None => false,
+        }
+    }
+
+    fn rate_limit_hint(&self) -> &'static str {
+        if self.peer.is_some() {
+            RATE_LIMIT_PEER_HINT
+        } else {
+            RATE_LIMIT_HINT
+        }
     }
 
     /// Returns a normalized key for the given URL that guarantees consistent ordering of query parameters,
@@ -275,7 +311,7 @@ impl SpotifyApiMiddleware {
                 %method,
                 %url,
                 retry_after_secs = retry_after.as_secs(),
-                hint = RATE_LIMIT_HINT,
+                hint = self.rate_limit_hint(),
                 "Spotify Web API rate limit encountered"
             );
         } else {
@@ -283,7 +319,7 @@ impl SpotifyApiMiddleware {
                 client = %self.client,
                 %method,
                 %url,
-                hint = RATE_LIMIT_HINT,
+                hint = self.rate_limit_hint(),
                 "Spotify Web API rate limit encountered without a valid Retry-After duration"
             );
         }
@@ -358,9 +394,11 @@ impl SpotifyApiMiddleware {
             self.observe_rate_limit(&response, &Method::GET, url).await;
 
             let retry_after = Self::retry_after(response.headers());
+            // a peer that is not rate limited serves the request sooner than waiting out the delay
             if response.status() != StatusCode::TOO_MANY_REQUESTS
                 || retry_after.is_none()
                 || attempt == self.requests.max_retries
+                || self.peer_available().await
             {
                 return Ok(response);
             }
@@ -499,6 +537,15 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn expired_retry_after_is_not_remaining() {
+        let requests = SpotifyApiRequestManager::new(2);
+        requests.store_retry_after(Duration::from_secs(10)).await;
+
+        tokio::time::advance(Duration::from_secs(11)).await;
+        assert_eq!(requests.retry_after_remaining().await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn coalesces_identical_gets_for_one_second() {
         let requests = SpotifyApiRequestManager::new(2);
         let key = "https://api.spotify.com/v1/me".to_string();
@@ -548,6 +595,66 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.text().await.unwrap(), "ok");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn returns_rate_limited_get_while_peer_is_available() {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("GET"))
+            .and(path("/v1/me"))
+            .respond_with(RateLimitThenOk {
+                calls: Arc::clone(&calls),
+            })
+            .mount(&server)
+            .await;
+
+        let middleware =
+            SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2, "custom").unwrap();
+        let requests = middleware.requests();
+        let client = ClientBuilder::new(reqwest::Client::new())
+            .with(middleware.with_peer(SpotifyApiRequestManager::new(2)))
+            .build();
+        let response = client
+            .get(format!("{}/v1/me", server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(requests.retry_after_remaining().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn retries_rate_limited_get_while_peer_is_rate_limited() {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("GET"))
+            .and(path("/v1/me"))
+            .respond_with(RateLimitThenOk {
+                calls: Arc::clone(&calls),
+            })
+            .mount(&server)
+            .await;
+
+        let peer = SpotifyApiRequestManager::new(2);
+        peer.store_retry_after(Duration::from_secs(60)).await;
+        let client = ClientBuilder::new(reqwest::Client::new())
+            .with(
+                SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 2, "custom")
+                    .unwrap()
+                    .with_peer(peer),
+            )
+            .build();
+        let response = client
+            .get(format!("{}/v1/me", server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 

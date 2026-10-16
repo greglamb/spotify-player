@@ -7,8 +7,9 @@ use rspotify::{
     AuthCodePkceSpotify, ClientError, ClientResult, Config, Credentials, OAuth, Token,
 };
 use serde_json::Value;
-use std::{fmt, sync::Arc};
+use std::{fmt, future::Future, sync::Arc, time::Duration};
 
+use super::middleware::SpotifyApiRequestManager;
 use crate::token;
 
 #[derive(Clone, Default)]
@@ -206,7 +207,20 @@ impl OAuthClient for PkceWebApiClient {
 pub struct WebApiClient {
     primary: PkceWebApiClient,
     fallback: Option<PkceWebApiClient>,
+    /// Rate-limit state of `primary` and `fallback`, used to route requests away from a client
+    /// that is waiting out a `Retry-After` delay.
+    rate_limits: Option<(SpotifyApiRequestManager, SpotifyApiRequestManager)>,
     ncspot_only_get_endpoints: Vec<String>,
+}
+
+/// Whether a request should go to the other client instead of the preferred one, given the
+/// remaining `Retry-After` delay of each.
+fn should_reroute(preferred: Option<Duration>, other: Option<Duration>) -> bool {
+    match (preferred, other) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(preferred), Some(other)) => other < preferred,
+    }
 }
 
 impl Default for WebApiClient {
@@ -220,6 +234,7 @@ impl WebApiClient {
         Self {
             primary: PkceWebApiClient::new(primary),
             fallback: fallback.map(PkceWebApiClient::new),
+            rate_limits: None,
             ncspot_only_get_endpoints: crate::config::DEFAULT_NCSPOT_ONLY_GET_ENDPOINTS
                 .iter()
                 .map(ToString::to_string)
@@ -235,16 +250,21 @@ impl WebApiClient {
         self
     }
 
+    pub(super) fn with_rate_limits(
+        mut self,
+        primary: SpotifyApiRequestManager,
+        fallback: SpotifyApiRequestManager,
+    ) -> Self {
+        self.rate_limits = Some((primary, fallback));
+        self
+    }
+
     pub(crate) fn primary_mut(&mut self) -> &mut PkceWebApiClient {
         &mut self.primary
     }
 
     pub(crate) fn fallback_mut(&mut self) -> Option<&mut PkceWebApiClient> {
         self.fallback.as_mut()
-    }
-
-    fn ncspot(&self) -> &PkceWebApiClient {
-        self.fallback.as_ref().unwrap_or(&self.primary)
     }
 
     fn is_ncspot_only_get(&self, url: &str) -> bool {
@@ -265,25 +285,71 @@ impl WebApiClient {
         }
     }
 
-    fn log_fallback(method: &str, url: &str, status: reqwest::StatusCode) {
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            tracing::warn!(
-                client = "custom",
-                method,
-                url,
-                %status,
-                hint = "the custom client ID's quota is exhausted; the request is retried with the ncspot client ID",
-                "Spotify Web API rate limit encountered"
-            );
+    /// Sends a request through the preferred client and retries it once through the other
+    /// client on a `4xx` response.
+    ///
+    /// The custom (primary) client is preferred unless `prefer_ncspot` is set. Either way, the
+    /// other client goes first while it would be available sooner than a rate-limited preferred one.
+    async fn route_request<'a, F, Fut>(
+        &'a self,
+        method: &str,
+        url: &str,
+        prefer_ncspot: bool,
+        request: F,
+    ) -> ClientResult<String>
+    where
+        F: Fn(&'a PkceWebApiClient) -> Fut,
+        Fut: Future<Output = ClientResult<String>>,
+    {
+        let Some(fallback) = &self.fallback else {
+            return request(&self.primary).await;
+        };
+
+        let custom = ("custom", &self.primary);
+        let ncspot = ("ncspot", fallback);
+        let (mut first, mut second) = if prefer_ncspot {
+            (ncspot, custom)
         } else {
-            // falling back on other 4xx responses is expected for endpoints
-            // a custom client ID is not allowed to access
-            tracing::info!(
-                method,
-                url,
-                %status,
-                "Custom Spotify Web API request failed; retrying with ncspot client"
-            );
+            (custom, ncspot)
+        };
+        if let Some((custom_limit, ncspot_limit)) = &self.rate_limits {
+            let (preferred, other) = if prefer_ncspot {
+                (ncspot_limit, custom_limit)
+            } else {
+                (custom_limit, ncspot_limit)
+            };
+            let preferred_remaining = preferred.retry_after_remaining().await;
+            if should_reroute(preferred_remaining, other.retry_after_remaining().await) {
+                tracing::info!(
+                    method,
+                    url,
+                    client = first.0,
+                    remaining_secs = preferred_remaining.unwrap_or_default().as_secs(),
+                    "Spotify client is rate limited; routing request to the {} client",
+                    second.0
+                );
+                std::mem::swap(&mut first, &mut second);
+            }
+        }
+
+        match request(first.1).await {
+            Err(error) => match Self::fallback_status(&error) {
+                Some(status) => {
+                    // a `429` was already raised as an alert by the client's middleware, and other
+                    // `4xx` responses are expected for endpoints a client is not allowed to access
+                    tracing::info!(
+                        method,
+                        url,
+                        %status,
+                        "Spotify Web API request through the {} client failed; retrying with the {} client",
+                        first.0,
+                        second.0
+                    );
+                    request(second.1).await
+                }
+                None => Err(error),
+            },
+            result => result,
         }
     }
 }
@@ -311,59 +377,27 @@ impl BaseClient for WebApiClient {
     }
 
     async fn api_get(&self, url: &str, payload: &Query<'_>) -> ClientResult<String> {
-        if self.is_ncspot_only_get(url) {
-            return self.ncspot().api_get(url, payload).await;
-        }
-
-        match self.primary.api_get(url, payload).await {
-            Err(error) => match (Self::fallback_status(&error), &self.fallback) {
-                (Some(status), Some(fallback)) => {
-                    Self::log_fallback("GET", url, status);
-                    fallback.api_get(url, payload).await
-                }
-                _ => Err(error),
-            },
-            result => result,
-        }
+        self.route_request("GET", url, self.is_ncspot_only_get(url), |client| {
+            client.api_get(url, payload)
+        })
+        .await
     }
 
     async fn api_post(&self, url: &str, payload: &Value) -> ClientResult<String> {
-        match self.primary.api_post(url, payload).await {
-            Err(error) => match (Self::fallback_status(&error), &self.fallback) {
-                (Some(status), Some(fallback)) => {
-                    Self::log_fallback("POST", url, status);
-                    fallback.api_post(url, payload).await
-                }
-                _ => Err(error),
-            },
-            result => result,
-        }
+        self.route_request("POST", url, false, |client| client.api_post(url, payload))
+            .await
     }
 
     async fn api_put(&self, url: &str, payload: &Value) -> ClientResult<String> {
-        match self.primary.api_put(url, payload).await {
-            Err(error) => match (Self::fallback_status(&error), &self.fallback) {
-                (Some(status), Some(fallback)) => {
-                    Self::log_fallback("PUT", url, status);
-                    fallback.api_put(url, payload).await
-                }
-                _ => Err(error),
-            },
-            result => result,
-        }
+        self.route_request("PUT", url, false, |client| client.api_put(url, payload))
+            .await
     }
 
     async fn api_delete(&self, url: &str, payload: &Value) -> ClientResult<String> {
-        match self.primary.api_delete(url, payload).await {
-            Err(error) => match (Self::fallback_status(&error), &self.fallback) {
-                (Some(status), Some(fallback)) => {
-                    Self::log_fallback("DELETE", url, status);
-                    fallback.api_delete(url, payload).await
-                }
-                _ => Err(error),
-            },
-            result => result,
-        }
+        self.route_request("DELETE", url, false, |client| {
+            client.api_delete(url, payload)
+        })
+        .await
     }
 }
 
@@ -380,12 +414,12 @@ impl OAuthClient for WebApiClient {
 
 #[cfg(test)]
 mod tests {
-    use super::WebApiClient;
+    use super::{should_reroute, WebApiClient};
     use crate::client::middleware::SpotifyApiMiddleware;
     use rspotify::{
         clients::BaseClient, http::Query, AuthCodePkceSpotify, Config, Credentials, OAuth, Token,
     };
-    use std::{collections::HashSet, sync::Arc};
+    use std::{collections::HashSet, sync::Arc, time::Duration};
     use wiremock::{
         matchers::{header, method, path},
         Mock, MockServer, Request, Respond, ResponseTemplate,
@@ -406,9 +440,22 @@ mod tests {
         }
     }
 
+    fn middleware(server: &MockServer, client: &str) -> SpotifyApiMiddleware {
+        SpotifyApiMiddleware::new(&format!("{}/v1", server.uri()), 1, client).unwrap()
+    }
+
     async fn client_with_token(
         server: &MockServer,
         with_middleware: bool,
+        access_token: &str,
+    ) -> AuthCodePkceSpotify {
+        let middleware = with_middleware.then(|| middleware(server, "ncspot"));
+        client_with_middleware(server, middleware, access_token).await
+    }
+
+    async fn client_with_middleware(
+        server: &MockServer,
+        middleware: Option<SpotifyApiMiddleware>,
         access_token: &str,
     ) -> AuthCodePkceSpotify {
         let config = Config {
@@ -418,14 +465,11 @@ mod tests {
         let client = AuthCodePkceSpotify::with_config(
             Credentials::new_pkce("client-id"),
             OAuth::default(),
-            config.clone(),
+            config,
         );
-        let client = if with_middleware {
-            client.with_middleware(
-                SpotifyApiMiddleware::new(&config.api_base_url, 1, "ncspot").unwrap(),
-            )
-        } else {
-            client
+        let client = match middleware {
+            Some(middleware) => client.with_middleware(middleware),
+            None => client,
         };
         *client.get_token().lock().await.unwrap() = Some(Token {
             access_token: access_token.to_string(),
@@ -439,6 +483,128 @@ mod tests {
 
     async fn client(server: &MockServer, with_middleware: bool) -> AuthCodePkceSpotify {
         client_with_token(server, with_middleware, "access-token").await
+    }
+
+    /// Builds a client whose primary and fallback track each other's rate limits, as in production.
+    async fn rate_limit_aware_client(
+        primary_server: &MockServer,
+        fallback_server: &MockServer,
+    ) -> WebApiClient {
+        let primary_middleware = middleware(primary_server, "custom");
+        let fallback_middleware = middleware(fallback_server, "ncspot");
+        let primary_requests = primary_middleware.requests();
+        let fallback_requests = fallback_middleware.requests();
+
+        WebApiClient::new(
+            client_with_middleware(
+                primary_server,
+                Some(primary_middleware.with_peer(fallback_requests.clone())),
+                "access-token",
+            )
+            .await,
+            Some(
+                client_with_middleware(
+                    fallback_server,
+                    Some(fallback_middleware.with_peer(primary_requests.clone())),
+                    "access-token",
+                )
+                .await,
+            ),
+        )
+        .with_rate_limits(primary_requests, fallback_requests)
+    }
+
+    #[test]
+    fn reroutes_only_when_other_client_is_available_sooner() {
+        let short = Some(Duration::from_secs(5));
+        let long = Some(Duration::from_secs(30));
+
+        assert!(!should_reroute(None, None));
+        assert!(!should_reroute(None, short));
+        assert!(should_reroute(short, None));
+        assert!(should_reroute(long, short));
+        assert!(!should_reroute(short, long));
+    }
+
+    #[tokio::test]
+    async fn rate_limited_primary_is_skipped_until_retry_after_elapses() {
+        let primary_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+            .expect(1)
+            .mount(&primary_server)
+            .await;
+        let fallback_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("fallback"))
+            .expect(2)
+            .mount(&fallback_server)
+            .await;
+
+        let client = rate_limit_aware_client(&primary_server, &fallback_server).await;
+
+        assert_eq!(
+            client.api_get("first", &Query::new()).await.unwrap(),
+            "fallback"
+        );
+        assert_eq!(
+            client.api_get("second", &Query::new()).await.unwrap(),
+            "fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn ncspot_only_rate_limit_falls_back_to_primary_without_waiting() {
+        let primary_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/me/playlists"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("primary"))
+            .expect(1)
+            .mount(&primary_server)
+            .await;
+        let fallback_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/me/playlists"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+            .expect(1)
+            .mount(&fallback_server)
+            .await;
+
+        let client = rate_limit_aware_client(&primary_server, &fallback_server).await;
+
+        assert_eq!(
+            client.api_get("me/playlists", &Query::new()).await.unwrap(),
+            "primary"
+        );
+    }
+
+    #[tokio::test]
+    async fn ncspot_only_client_error_falls_back_to_primary() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/me/playlists"))
+            .and(header("authorization", "Bearer fallback-token"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/me/playlists"))
+            .and(header("authorization", "Bearer primary-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("primary"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = WebApiClient::new(
+            client_with_token(&server, false, "primary-token").await,
+            Some(client_with_token(&server, true, "fallback-token").await),
+        );
+
+        assert_eq!(
+            client.api_get("me/playlists", &Query::new()).await.unwrap(),
+            "primary"
+        );
     }
 
     #[tokio::test]
