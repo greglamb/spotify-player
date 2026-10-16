@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use http::Extensions;
 use reqwest::{
@@ -14,8 +18,13 @@ use tokio::{
 const GET_DEDUPLICATION_WINDOW: Duration = Duration::from_secs(1);
 
 /// Actionable context attached to rate-limit warnings, shown in the alert popup.
-const RATE_LIMIT_HINT: &str = "requests are paused until the Retry-After delay elapses; \
-     configuring `client_id` in app.toml gives the app its own Spotify API quota";
+static RATE_LIMIT_HINT: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "requests are paused until the Retry-After delay elapses; setting `client_id` in {} \
+         gives the app its own Spotify API quota",
+        crate::config::app_config_path()
+    )
+});
 /// [`RATE_LIMIT_HINT`] for a client that has a peer client to route requests to.
 const RATE_LIMIT_PEER_HINT: &str =
     "requests are routed to the other Spotify client ID until the Retry-After delay elapses";
@@ -263,7 +272,7 @@ impl SpotifyApiMiddleware {
     /// gets: another client to route to, a wait on both clients, or no peer at all.
     async fn rate_limit_hint(&self) -> &'static str {
         match &self.peer {
-            None => RATE_LIMIT_HINT,
+            None => RATE_LIMIT_HINT.as_str(),
             Some(peer) => {
                 if peer.retry_after_remaining().await.is_none() {
                     RATE_LIMIT_PEER_HINT
@@ -455,7 +464,10 @@ impl Middleware for SpotifyApiMiddleware {
 
 #[cfg(test)]
 mod tests {
-    use super::{GetRegistration, SharedGetResult, SpotifyApiMiddleware, SpotifyApiRequestManager};
+    use super::{
+        GetRegistration, SharedGetResult, SpotifyApiMiddleware, SpotifyApiRequestManager,
+        RATE_LIMIT_HINT,
+    };
     use reqwest::{header::HeaderValue, StatusCode, Url};
     use reqwest_middleware::ClientBuilder;
     use std::{
@@ -550,6 +562,15 @@ mod tests {
         tokio::time::advance(Duration::from_secs(11)).await;
         waiting.await.unwrap();
         assert_eq!(requests.retry_after_remaining().await, None);
+    }
+
+    #[test]
+    fn the_rate_limit_hint_names_the_config_file() {
+        let hint = RATE_LIMIT_HINT.as_str();
+
+        assert!(hint.contains("client_id"), "{hint}");
+        // the path is the file's name only while the configurations are not initialized
+        assert!(hint.contains(&crate::config::app_config_path()), "{hint}");
     }
 
     #[tokio::test(start_paused = true)]

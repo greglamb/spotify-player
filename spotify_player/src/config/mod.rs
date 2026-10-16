@@ -33,6 +33,7 @@ pub struct Configs {
     pub app_config: AppConfig,
     pub keymap_config: KeymapConfig,
     pub theme_config: ThemeConfig,
+    pub config_folder: std::path::PathBuf,
     pub cache_folder: std::path::PathBuf,
 }
 
@@ -42,6 +43,7 @@ impl Configs {
             app_config: AppConfig::new(config_folder)?,
             keymap_config: KeymapConfig::new(config_folder)?,
             theme_config: ThemeConfig::new(config_folder)?,
+            config_folder: config_folder.to_path_buf(),
             cache_folder: cache_folder.to_path_buf(),
         })
     }
@@ -560,6 +562,21 @@ pub fn get_cache_folder_path() -> Result<PathBuf> {
     match dirs_next::home_dir() {
         Some(home) => Ok(home.join(DEFAULT_CACHE_FOLDER)),
         None => Err(anyhow!("cannot find the $HOME folder")),
+    }
+}
+
+/// The path of the application's config file, the one holding `client_id` and the other app
+/// options, so a message about an option can point the user at the file to edit.
+///
+/// Falls back to the file's name while the configurations are not initialized.
+pub fn app_config_path() -> String {
+    match CONFIGS.get() {
+        Some(configs) => configs
+            .config_folder
+            .join(APP_CONFIG_FILE)
+            .display()
+            .to_string(),
+        None => APP_CONFIG_FILE.to_string(),
     }
 }
 

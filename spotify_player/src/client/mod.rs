@@ -116,8 +116,12 @@ pub fn new_api_client() -> Result<WebApiClient> {
     let primary_cache_file = format!("{id}_token.json");
 
     if id == auth::NCSPOT_CLIENT_ID {
+        let hint = format!(
+            "set `client_id` in {} to use your own Spotify API quota",
+            config::app_config_path()
+        );
         tracing::warn!(
-            hint = "set `client_id` in app.toml to use your own Spotify API quota",
+            hint = hint.as_str(),
             "No custom client ID is configured; all Spotify Web API requests use the shared ncspot client ID"
         );
         let config = build_config(&primary_cache_file);
