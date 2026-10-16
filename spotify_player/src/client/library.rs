@@ -13,8 +13,9 @@ use crate::{
     config,
     state::{
         load_playlist_from_file_cache, remove_playlist_from_file_cache,
-        store_playlist_into_file_cache, Album, Context, FileCacheKey, LibrarySync, Playlist,
-        PlaylistFolderItem, SharedState, Track, TTL_CACHE_DURATION, USER_LIKED_TRACKS_URI,
+        store_playlist_into_file_cache, write_file_cache, Album, Context, FileCacheKey,
+        LibrarySync, Playlist, PlaylistFolderItem, SharedState, Track, TTL_CACHE_DURATION,
+        USER_LIKED_TRACKS_URI,
     },
 };
 
@@ -270,15 +271,27 @@ impl AppClient {
 
     /// Persist a library collection, along with its sync state if it has one.
     fn store_user_library(state: &SharedState, key: FileCacheKey) -> Result<()> {
-        let data = state.data.read();
+        // serialized while holding the lock and written without it, so that a large collection
+        // does not block the application's data for the length of a disk write
+        let caches = {
+            let data = state.data.read();
+            let mut caches = vec![(key, data.user_data.to_file_cache(key))];
+            if is_synced_incrementally(key) {
+                caches.push((
+                    FileCacheKey::LibrarySync,
+                    data.user_data.to_file_cache(FileCacheKey::LibrarySync),
+                ));
+            }
+            caches
+        };
+
         let cache_folder = &config::get_config().cache_folder;
-        data.user_data
-            .store_into_file_cache(key, cache_folder)
-            .with_context(|| format!("store {key:?} into the cache folder"))?;
-        if is_synced_incrementally(key) {
-            data.user_data
-                .store_into_file_cache(FileCacheKey::LibrarySync, cache_folder)
-                .context("store the library sync state into the cache folder")?;
+        for (key, cache) in caches {
+            let Some(data) = cache.with_context(|| format!("serialize {key:?}"))? else {
+                continue;
+            };
+            write_file_cache(key, cache_folder, &data)
+                .with_context(|| format!("store {key:?} into the cache folder"))?;
         }
         Ok(())
     }

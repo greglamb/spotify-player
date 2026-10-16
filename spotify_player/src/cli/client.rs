@@ -523,6 +523,7 @@ async fn handle_playlist_request(client: &AppClient, command: PlaylistCommand) -
                 client
                     .library_remove([LibraryId::Playlist(id.clone())])
                     .await?;
+                discard_cached_playlist(&id);
                 Ok(format!("Playlist '{id}' was deleted/unfollowed"))
             } else {
                 Ok(format!(

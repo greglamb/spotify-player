@@ -1376,6 +1376,11 @@ impl AppClient {
                         PlaylistFolderItem::Playlist(p) => p.id != id,
                         PlaylistFolderItem::Folder(_) => true,
                     });
+                // the playlist's cached tracks go with it; a failed removal only costs a
+                // download the next time it is opened
+                if let Err(err) = Self::discard_cached_playlist(&id) {
+                    tracing::error!("{err:#}");
+                }
                 self.library_remove([LibraryId::Playlist(id)]).await?;
                 Self::store_library_change(state, FileCacheKey::Playlists, false);
             }

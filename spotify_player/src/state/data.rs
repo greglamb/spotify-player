@@ -337,32 +337,23 @@ impl UserData {
         self.loaded.contains(&key)
     }
 
-    /// Persist the in-memory copy of a library collection into its file cache.
-    pub fn store_into_file_cache(
-        &self,
-        key: FileCacheKey,
-        cache_folder: &Path,
-    ) -> std::io::Result<()> {
-        match key {
-            FileCacheKey::Playlists => {
-                store_data_into_file_cache(key, cache_folder, &self.playlists)
-            }
+    /// Serialize the in-memory copy of a library collection for its file cache, or `None` for
+    /// a collection the app never writes.
+    ///
+    /// Serializing and writing are separate so that the caller can write the file without
+    /// holding the lock on the application's data.
+    pub fn to_file_cache(&self, key: FileCacheKey) -> serde_json::Result<Option<Vec<u8>>> {
+        let data = match key {
+            FileCacheKey::Playlists => serde_json::to_vec(&self.playlists)?,
             // playlist folders are generated outside the app and never changed by it
-            FileCacheKey::PlaylistFolders => Ok(()),
-            FileCacheKey::FollowedArtists => {
-                store_data_into_file_cache(key, cache_folder, &self.followed_artists)
-            }
-            FileCacheKey::SavedShows => {
-                store_data_into_file_cache(key, cache_folder, &self.saved_shows)
-            }
-            FileCacheKey::SavedAlbums => {
-                store_data_into_file_cache(key, cache_folder, &self.saved_albums)
-            }
-            FileCacheKey::SavedTracks => {
-                store_data_into_file_cache(key, cache_folder, &self.saved_tracks)
-            }
-            FileCacheKey::LibrarySync => store_data_into_file_cache(key, cache_folder, &self.sync),
-        }
+            FileCacheKey::PlaylistFolders => return Ok(None),
+            FileCacheKey::FollowedArtists => serde_json::to_vec(&self.followed_artists)?,
+            FileCacheKey::SavedShows => serde_json::to_vec(&self.saved_shows)?,
+            FileCacheKey::SavedAlbums => serde_json::to_vec(&self.saved_albums)?,
+            FileCacheKey::SavedTracks => serde_json::to_vec(&self.saved_tracks)?,
+            FileCacheKey::LibrarySync => serde_json::to_vec(&self.sync)?,
+        };
+        Ok(Some(data))
     }
 
     /// The `snapshot_id` recorded for a playlist in the user's playlist list.
@@ -538,22 +529,24 @@ pub fn remove_playlist_from_file_cache(
     }
 }
 
-pub fn store_data_into_file_cache<T: Serialize>(
+fn file_cache_path(key: FileCacheKey, cache_folder: &Path) -> PathBuf {
+    cache_folder.join(format!("{key:?}_cache.json"))
+}
+
+/// Write a library collection's serialized file cache.
+pub fn write_file_cache(
     key: FileCacheKey,
     cache_folder: &Path,
-    data: &T,
+    data: &[u8],
 ) -> std::io::Result<()> {
-    let path = cache_folder.join(format!("{key:?}_cache.json"));
-    let f = BufWriter::new(std::fs::File::create(path)?);
-    serde_json::to_writer(f, data)?;
-    Ok(())
+    std::fs::write(file_cache_path(key, cache_folder), data)
 }
 
 pub fn load_data_from_file_cache<T>(key: FileCacheKey, cache_folder: &Path) -> Option<T>
 where
     T: DeserializeOwned,
 {
-    let path = cache_folder.join(format!("{key:?}_cache.json"));
+    let path = file_cache_path(key, cache_folder);
     if path.exists() {
         tracing::info!("Loading {key:?} data from {}...", path.display());
         let f = BufReader::new(std::fs::File::open(path).expect("path exists"));
@@ -575,10 +568,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        load_playlist_from_file_cache, remove_playlist_from_file_cache, store_data_into_file_cache,
-        store_playlist_into_file_cache, Album, FileCacheKey, Id, LibrarySync, MemoryCaches,
-        Playlist, PlaylistFolderItem, SearchCacheEntry, SearchResults, Track, UserData,
+        load_playlist_from_file_cache, remove_playlist_from_file_cache,
+        store_playlist_into_file_cache, write_file_cache, Album, FileCacheKey, Id, LibrarySync,
+        MemoryCaches, Playlist, PlaylistFolderItem, SearchCacheEntry, SearchResults, Track,
+        UserData,
     };
+
+    /// Write a value as a collection's file cache.
+    fn store_value<T: serde::Serialize>(key: FileCacheKey, folder: &TempCacheFolder, value: &T) {
+        write_file_cache(key, &folder.0, &serde_json::to_vec(value).unwrap()).unwrap();
+    }
+
+    /// Serialize and write a collection's file cache, as the client does.
+    fn store(user_data: &UserData, key: FileCacheKey, folder: &TempCacheFolder) {
+        let data = user_data
+            .to_file_cache(key)
+            .unwrap()
+            .expect("the collection has a file cache");
+        write_file_cache(key, &folder.0, &data).unwrap();
+    }
     use rspotify::model::{AlbumId, PlaylistId, TrackId, UserId};
     use std::{collections::HashMap, path::PathBuf};
 
@@ -810,9 +818,7 @@ mod tests {
     fn incremental_sync_requires_a_loaded_cache() {
         let folder = TempCacheFolder::new("sync-needs-cache");
         let mut user_data = synced_liked_tracks(&folder);
-        user_data
-            .store_into_file_cache(FileCacheKey::LibrarySync, &folder.0)
-            .unwrap();
+        store(&user_data, FileCacheKey::LibrarySync, &folder);
 
         // the sync state is reloaded, but describes a liked tracks cache that no longer exists
         let reloaded = UserData::new_from_file_caches(&folder.0);
@@ -828,14 +834,12 @@ mod tests {
     #[test]
     fn only_cached_collections_are_loaded() {
         let folder = TempCacheFolder::new("only-cached");
-        store_data_into_file_cache(FileCacheKey::SavedAlbums, &folder.0, &Vec::<()>::new())
-            .unwrap();
-        store_data_into_file_cache(
+        store_value(FileCacheKey::SavedAlbums, &folder, &Vec::<()>::new());
+        store_value(
             FileCacheKey::SavedTracks,
-            &folder.0,
+            &folder,
             &tracks_by_uri([track("a", 1)]),
-        )
-        .unwrap();
+        );
 
         let user_data = UserData::new_from_file_caches(&folder.0);
 
@@ -848,12 +852,11 @@ mod tests {
     #[test]
     fn saved_tracks_cache_without_liked_dates_is_not_loaded() {
         let folder = TempCacheFolder::new("no-liked-dates");
-        store_data_into_file_cache(
+        store_value(
             FileCacheKey::SavedTracks,
-            &folder.0,
+            &folder,
             &tracks_by_uri([track("a", 1), track("b", 0)]),
-        )
-        .unwrap();
+        );
 
         let user_data = UserData::new_from_file_caches(&folder.0);
 
@@ -866,9 +869,7 @@ mod tests {
         let folder = TempCacheFolder::new("store-liked-dates");
         let mut user_data = UserData::new_from_file_caches(&folder.0);
         user_data.saved_tracks = tracks_by_uri([track("a", 42)]);
-        user_data
-            .store_into_file_cache(FileCacheKey::SavedTracks, &folder.0)
-            .unwrap();
+        store(&user_data, FileCacheKey::SavedTracks, &folder);
 
         let reloaded = UserData::new_from_file_caches(&folder.0);
 

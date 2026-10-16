@@ -735,7 +735,7 @@ fn handle_global_command(
             if let Some(id) = id {
                 client_pub.send(ClientRequest::RefreshContext(id))?;
             } else {
-                tracing::warn!("No playlist, album, artist or show to refresh");
+                tracing::info!("No playlist, album, artist or show to refresh");
             }
         }
         Command::RefreshLikedTracks => {
