@@ -382,12 +382,14 @@ pub fn render_alert_popup(frame: &mut Frame, state: &SharedState, ui: &UIStateGu
         ));
     }
     lines.push(Line::raw(""));
-    lines.push(Line::styled(
+
+    // the keys get a row of their own at the bottom, so that a long message cannot push the
+    // only instructions for dismissing the alert out of the popup
+    let keys = Line::styled(
         "[esc] dismiss  [a] dismiss all  [y] copy  [Y] copy all  [g o] logs",
         dim_style,
-    ));
-
-    let area = alert_popup_area(rect, &lines);
+    );
+    let area = alert_popup_area(rect, &lines, 1);
 
     let title = if n_alerts > 1 {
         format!("Alert (1/{n_alerts})")
@@ -400,24 +402,59 @@ pub fn render_alert_popup(frame: &mut Frame, state: &SharedState, ui: &UIStateGu
     frame.render_widget(Block::default().style(ui.theme.app()), area);
 
     let inner_rect = construct_and_render_block(&title, &ui.theme, Borders::ALL, frame, area);
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner_rect);
+    let chunks = Layout::vertical([Constraint::Fill(0), Constraint::Length(1)]).split(inner_rect);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[0]);
+    frame.render_widget(Paragraph::new(keys), chunks[1]);
 }
 
-/// The centered area of `rect` that fits the alert popup's `lines`,
+/// The number of rows `line` takes up once wrapped at `width`.
+///
+/// `Paragraph`'s wrapping breaks on word boundaries and splits a word that is longer than the
+/// line, so counting characters alone underestimates a message holding a long URL.
+fn wrapped_rows(line: &Line, width: usize) -> usize {
+    let width = std::cmp::max(width, 1);
+    let text = line.to_string();
+    // `Wrap { trim: false }` keeps the indentation of a field line
+    let mut used = std::cmp::min(text.len() - text.trim_start().len(), width);
+    let mut rows = 1;
+
+    for word in text.split_whitespace() {
+        let length = word.chars().count();
+        let space = usize::from(used > 0);
+        if used + space + length <= width {
+            used += space + length;
+            continue;
+        }
+
+        if used > 0 {
+            rows += 1;
+        }
+        let extra_rows = (length - 1) / width;
+        rows += extra_rows;
+        used = length - extra_rows * width;
+    }
+
+    rows
+}
+
+/// The centered area of `rect` that fits the alert popup's `lines` and `reserved_rows` more,
 /// including the surrounding block's borders.
-fn alert_popup_area(rect: Rect, lines: &[Line]) -> Rect {
+fn alert_popup_area(rect: Rect, lines: &[Line], reserved_rows: u16) -> Rect {
     let width = rect
         .width
         .saturating_sub(4)
         .clamp(MIN_ALERT_POPUP_WIDTH, MAX_ALERT_POPUP_WIDTH);
     // the block's left/right borders reduce the width available for wrapping
-    let inner_width = std::cmp::max(width.saturating_sub(2), 1) as usize;
+    let inner_width = usize::from(std::cmp::max(width.saturating_sub(2), 1));
     let n_rows: usize = lines
         .iter()
-        .map(|line| std::cmp::max(line.width(), 1).div_ceil(inner_width))
+        .map(|line| wrapped_rows(line, inner_width))
         .sum();
     let height = std::cmp::min(
-        u16::try_from(n_rows).unwrap_or(u16::MAX).saturating_add(2),
+        u16::try_from(n_rows)
+            .unwrap_or(u16::MAX)
+            .saturating_add(reserved_rows)
+            .saturating_add(2),
         rect.height,
     );
 
@@ -440,7 +477,9 @@ fn render_list_popup(
 ) -> Rect {
     let chunks = Layout::vertical([Constraint::Fill(0), Constraint::Length(length)]).split(rect);
 
-    let rect = construct_and_render_block(title, &ui.theme, Borders::ALL, frame, chunks[1]);
+    // every list popup is dismissed the same way, so the key belongs in the shared title
+    let title = format!("{title} ([esc] close)");
+    let rect = construct_and_render_block(&title, &ui.theme, Borders::ALL, frame, chunks[1]);
     let selected_index = ui.popup.as_ref().and_then(PopupState::list_selected);
     let (list, len) = utils::construct_list_widget(&ui.theme, items, true, selected_index);
 
@@ -547,7 +586,7 @@ mod tests {
         let rect = Rect::new(0, 0, 100, 40);
         let lines = vec![Line::raw("rate limited"), Line::raw("retry_after: 30")];
 
-        let area = alert_popup_area(rect, &lines);
+        let area = alert_popup_area(rect, &lines, 0);
 
         assert_eq!(area.width, MAX_ALERT_POPUP_WIDTH);
         assert_eq!(area.height, 4); // 2 lines + top/bottom borders
@@ -563,7 +602,20 @@ mod tests {
             "x".repeat(usize::from(MAX_ALERT_POPUP_WIDTH - 2) * 3),
         )];
 
-        assert_eq!(alert_popup_area(rect, &lines).height, 5);
+        assert_eq!(alert_popup_area(rect, &lines, 0).height, 5);
+    }
+
+    #[test]
+    fn keeps_a_row_for_the_alert_popup_keys() {
+        let rect = Rect::new(0, 0, 100, 40);
+        // the message of a failed request, which wraps onto a row of its own after "for url"
+        let lines = vec![Line::raw(
+            "Failed to refresh Playlists: http error: request: error sending request for url \
+             (https://api.spotify.com/v1/me/playlists?limit=50&offset=100&market=from_token)",
+        )];
+
+        // 4 wrapped rows, the reserved row for the keys, and the two borders
+        assert_eq!(alert_popup_area(rect, &lines, 1).height, 7);
     }
 
     #[test]
@@ -571,7 +623,7 @@ mod tests {
         let rect = Rect::new(3, 2, 30, 6);
         let lines = (0..20).map(|_| Line::raw("failure")).collect::<Vec<_>>();
 
-        let area = alert_popup_area(rect, &lines);
+        let area = alert_popup_area(rect, &lines, 1);
 
         assert!(area.width <= rect.width);
         assert_eq!(area.height, rect.height);
