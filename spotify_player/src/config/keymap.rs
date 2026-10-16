@@ -536,6 +536,14 @@ impl std::fmt::Display for PaletteCommand {
 }
 
 impl KeymapConfig {
+    /// The first key sequence bound to `command`, if it has one.
+    pub fn first_key(&self, command: Command) -> Option<String> {
+        self.keymaps
+            .iter()
+            .find(|keymap| keymap.command == command)
+            .map(|keymap| keymap.key_sequence.to_string())
+    }
+
     /// Every command this keymap binds, ordered by the `Command` enum, for the command palette.
     ///
     /// A command bound to several key sequences appears once, listing all of them.

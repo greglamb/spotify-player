@@ -13,6 +13,7 @@ notify_transient = false
 app_refresh_duration_in_ms = 32
 playback_refresh_duration_in_ms = 0
 api_rate_limit_retries = 2
+enable_shortcut_hints = true
 enable_alert_popup = true
 alert_popup_min_level = "Warn"
 page_size_in_rows = 20

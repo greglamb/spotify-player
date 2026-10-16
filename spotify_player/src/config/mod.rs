@@ -19,9 +19,9 @@ use std::{
 };
 
 use anyhow::Context;
-use keymap::KeymapConfig;
 use theme::ThemeConfig;
 
+pub use keymap::KeymapConfig;
 pub use theme::Theme;
 
 use crate::auth::{NCSPOT_CLIENT_ID, SPOTIFY_CLIENT_ID};
@@ -64,6 +64,8 @@ pub struct AppConfig {
 
     pub log_folder: Option<PathBuf>,
 
+    /// Show a row of the keys that work on the current page at the bottom of the screen.
+    pub enable_shortcut_hints: bool,
     /// Show a dismissible popup for warnings/errors that are otherwise only logged.
     pub enable_alert_popup: bool,
     /// Minimum severity of a log event that raises an alert popup.
@@ -351,6 +353,7 @@ impl Default for AppConfig {
 
             log_folder: None,
 
+            enable_shortcut_hints: true,
             enable_alert_popup: true,
             alert_popup_min_level: AlertLevel::Warn,
 

@@ -1,5 +1,6 @@
 use crate::{
-    config,
+    command::Command,
+    config::{self, KeymapConfig},
     state::{
         Album, Artist, ArtistFocusState, BrowsePageUIState, Context, ContextPageUIState,
         DataReadGuard, Id, LibraryFocusState, MutableWindowState, PageState, PageType,
@@ -135,9 +136,15 @@ fn clean_up(mut terminal: Terminal) -> Result<()> {
     Ok(())
 }
 
+/// Area below which the shortcut hints cost more than the row they take.
+const MIN_SHORTCUT_HINTS_HEIGHT: u16 = 8;
+
 /// Render the application
 fn render_application(frame: &mut Frame, state: &SharedState, ui: &mut UIStateGuard, rect: Rect) {
     // rendering order: playback window -> shortcut help popup -> other popups -> main layout -> alert popup
+
+    // the hints keep the last row of the screen, whichever side the playback window is on
+    let rect = render_shortcut_hints(frame, ui, rect);
 
     // render playback window before other popups and windows to ensure nothing is rendered on top
     // of the playback window, which is to avoid "duplicated images" issue
@@ -157,6 +164,112 @@ fn render_application(frame: &mut Frame, state: &SharedState, ui: &mut UIStateGu
     // render the alert popup last so it appears on top of the main layout,
     // but within the area left by the playback window to avoid cover image artifacts
     popup::render_alert_popup(frame, state, ui, content_rect);
+}
+
+/// Render the keys that work right now along the bottom, returning the area above them.
+fn render_shortcut_hints(frame: &mut Frame, ui: &UIStateGuard, rect: Rect) -> Rect {
+    let configs = config::get_config();
+    if !configs.app_config.enable_shortcut_hints || rect.height < MIN_SHORTCUT_HINTS_HEIGHT {
+        return rect;
+    }
+
+    let chunks = Layout::vertical([Constraint::Fill(0), Constraint::Length(1)]).split(rect);
+    let hints = shortcut_hints(
+        &configs.keymap_config,
+        ui.popup.as_ref(),
+        ui.current_page().page_type(),
+        usize::from(chunks[1].width.saturating_sub(1)),
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            format!(" {hints}"),
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+        chunks[1],
+    );
+    chunks[0]
+}
+
+/// The commands worth hinting at, for the popup in the way or else for the current page.
+///
+/// The command palette and the help page come first, so that a narrow screen keeps the two
+/// that lead everywhere else.
+fn hint_commands(popup: Option<&PopupState>, page: PageType) -> Vec<(Command, &'static str)> {
+    let mut hints = vec![
+        (Command::OpenCommandPalette, "commands"),
+        (Command::OpenCommandHelp, "help"),
+    ];
+
+    if let Some(popup) = popup {
+        match popup {
+            PopupState::CommandPalette { .. } => hints.push((Command::ChooseSelected, "run")),
+            // the search popup filters the page underneath, which stays in charge
+            PopupState::Search { .. } => {}
+            _ => hints.push((Command::ChooseSelected, "choose")),
+        }
+        hints.push((Command::ClosePopup, "close"));
+        return hints;
+    }
+
+    match page {
+        PageType::Library => {
+            hints.extend([
+                (Command::ChooseSelected, "open"),
+                (Command::Search, "search"),
+                (Command::RefreshLibrary, "refresh"),
+            ]);
+        }
+        PageType::Context => {
+            hints.extend([
+                (Command::ChooseSelected, "play"),
+                (Command::ShowActionsOnSelectedItem, "actions"),
+                (Command::RefreshCurrentContext, "refresh"),
+            ]);
+        }
+        PageType::Browse => {
+            hints.extend([
+                (Command::ChooseSelected, "open"),
+                (Command::PreviousPage, "back"),
+            ]);
+        }
+        PageType::Search => {
+            hints.extend([
+                (Command::ChooseSelected, "select"),
+                (Command::PreviousPage, "back"),
+            ]);
+        }
+        PageType::CommandHelp => {
+            hints.extend([(Command::Search, "search"), (Command::PreviousPage, "back")]);
+        }
+        PageType::Queue | PageType::Lyrics | PageType::Logs => {
+            hints.push((Command::PreviousPage, "back"));
+        }
+    }
+    hints.push((Command::Quit, "quit"));
+    hints
+}
+
+/// A row of `[key] label` hints that fits `width` columns, leaving out what does not.
+fn shortcut_hints(
+    keymap: &KeymapConfig,
+    popup: Option<&PopupState>,
+    page: PageType,
+    width: usize,
+) -> String {
+    let mut hints = String::new();
+    for (command, label) in hint_commands(popup, page) {
+        let Some(keys) = keymap.first_key(command) else {
+            continue;
+        };
+        let separator = if hints.is_empty() { "" } else { "  " };
+        let hint = format!("{separator}[{keys}] {label}");
+        if hints.chars().count() + hint.chars().count() > width {
+            break;
+        }
+        hints.push_str(&hint);
+    }
+    hints
 }
 
 /// Render the application's main layout
@@ -209,5 +322,58 @@ impl Orientation {
             Self::Vertical => Layout::vertical(constraints),
             Self::Horizontal => Layout::horizontal(constraints),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shortcut_hints, Command, KeymapConfig, PageType, PopupState};
+
+    #[test]
+    fn the_shortcut_hints_lead_with_the_palette_and_the_help_page() {
+        let hints = shortcut_hints(&KeymapConfig::default(), None, PageType::Library, 200);
+
+        assert!(hints.starts_with("[f1] commands  [?] help"), "{hints}");
+        assert!(hints.ends_with("[q] quit"), "{hints}");
+    }
+
+    #[test]
+    fn the_shortcut_hints_follow_the_page_and_the_popup() {
+        let keymap = KeymapConfig::default();
+
+        let library = shortcut_hints(&keymap, None, PageType::Library, 200);
+        assert!(library.contains("[U U] refresh"), "{library}");
+
+        let popup = PopupState::Search {
+            query: String::new(),
+        };
+        let searching = shortcut_hints(&keymap, Some(&popup), PageType::Library, 200);
+        assert!(searching.contains("[esc] close"), "{searching}");
+        assert!(!searching.contains("refresh"), "{searching}");
+    }
+
+    #[test]
+    fn the_shortcut_hints_leave_out_what_does_not_fit() {
+        let keymap = KeymapConfig::default();
+        let full = shortcut_hints(&keymap, None, PageType::Library, 200);
+
+        let narrow = shortcut_hints(&keymap, None, PageType::Library, 23);
+
+        assert_eq!(narrow, "[f1] commands  [?] help");
+        assert!(full.len() > narrow.len(), "{full}");
+        assert!(shortcut_hints(&keymap, None, PageType::Library, 4).is_empty());
+    }
+
+    #[test]
+    fn an_unbound_command_is_left_out_of_the_shortcut_hints() {
+        let mut keymap = KeymapConfig::default();
+        keymap
+            .keymaps
+            .retain(|keymap| keymap.command != Command::OpenCommandPalette);
+
+        let hints = shortcut_hints(&keymap, None, PageType::Library, 200);
+
+        assert!(!hints.contains("commands"), "{hints}");
+        assert!(hints.starts_with("[?] help"), "{hints}");
     }
 }
