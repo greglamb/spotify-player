@@ -330,7 +330,7 @@ cargo install spotify_player --no-default-features
 
 Real-time audio visualization is displayed in the playback window as a frequency-band bar chart (64 log-scale bands from bass (left) to treble (right)) while music is streamed locally via the integrated [librespot](https://github.com/librespot-org/librespot) player. The visualization area is hidden when playback is on an external Spotify Connect device or when the playback is not playing.
 
-Set `enable_audio_visualization` to `true` in your config to enable this feature. The bars are colored by amplitude using the active theme's `visualization` component style (`low`/`mid`/`high` colors); see [config docs](https://github.com/aome510/spotify-player/blob/master/docs/config.md).
+It is on by default; set `enable_audio_visualization` to `false` to give those rows back to the playback window. The bars are colored by amplitude using the active theme's `visualization` component style (`low`/`mid`/`high` colors); see [config docs](https://github.com/aome510/spotify-player/blob/master/docs/config.md).
 
 ![Audio Visualization](https://github.com/user-attachments/assets/8c21c1b0-5276-4a9e-b719-e0c2bd555537)
 
@@ -415,7 +415,7 @@ Any other key is passed through to the application, so playback and navigation k
 
 Repeats of the same event are coalesced into a single alert with a count instead of stacking up, and at most 20 alerts are kept. Dismissed alerts are not lost: every alert comes from a log event, so it remains on the logs page (`g o`) and in the [log file](#logging).
 
-Only errors raise a popup by default, because a warning is something the application recovered from: a `429` the other client ID served, a retry that then succeeded, a refresh that kept its saved copy. Set `alert_popup_min_level = "Warn"` to be told about those as well, which also brings back the startup notice about the shared ncspot client ID, or `enable_alert_popup = false` to turn the popup off entirely. Warnings remain on the logs page (`g o`) either way, and alerts follow the logging setup, so `RUST_LOG=off` disables them.
+A few notices are marked as always worth showing and raise a popup whatever this is set to, such as the one about the shared ncspot client ID. Otherwise only errors raise a popup by default, because a warning is something the application recovered from: a `429` the other client ID served, a retry that then succeeded, a refresh that kept its saved copy. Set `alert_popup_min_level = "Warn"` to be told about those as well, which also brings back the startup notice about the shared ncspot client ID, or `enable_alert_popup = false` to turn the popup off entirely. Warnings remain on the logs page (`g o`) either way, and alerts follow the logging setup, so `RUST_LOG=off` disables them.
 
 ### Mouse support
 

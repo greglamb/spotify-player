@@ -429,7 +429,7 @@ impl Default for AppConfig {
             enable_streaming: StreamingType::Always,
 
             #[cfg(feature = "streaming")]
-            enable_audio_visualization: false,
+            enable_audio_visualization: true,
 
             #[cfg(feature = "notify")]
             enable_notify: true,
