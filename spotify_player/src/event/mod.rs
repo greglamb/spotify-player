@@ -688,6 +688,9 @@ fn handle_global_command(
         Command::RefreshPlayback => {
             client_pub.send(ClientRequest::GetCurrentPlayback)?;
         }
+        Command::RefreshLibrary => {
+            client_pub.send(ClientRequest::RefreshUserLibrary)?;
+        }
         Command::ShowActionsOnCurrentTrack => {
             if let Some(currently_playing) = state.player.read().currently_playing() {
                 match currently_playing {

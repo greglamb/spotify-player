@@ -92,6 +92,10 @@ impl Default for KeymapConfig {
                     command: Command::RefreshPlayback,
                 },
                 Keymap {
+                    key_sequence: "g R".into(),
+                    command: Command::RefreshLibrary,
+                },
+                Keymap {
                     key_sequence: "/".into(),
                     command: Command::Search,
                 },

@@ -33,6 +33,7 @@
 - [Commands](#commands)
 - [Configurations](#configurations)
 - [Caches](#caches)
+  - [Library cache](#library-cache)
   - [Logging](#logging)
 - [Acknowledgement](#acknowledgement)
 
@@ -482,6 +483,7 @@ Press `?` or `C-h` to open the shortcut help page (default for `OpenCommandHelp`
 
 - Use the `Search` command to search in the shortcut help page and other pages.
 - `RefreshPlayback` manually updates playback status.
+- `RefreshLibrary` re-downloads your library, which is otherwise loaded from its [saved copy](#library-cache).
 - `RestartIntegratedClient` is useful for switching audio devices without restarting the app.
 
 List of supported commands:
@@ -509,6 +511,7 @@ List of supported commands:
 | `SelectLastOrScrollToBottom`    | select the last item in a list/table or scroll to the bottom                                       | `G`, `end`         |
 | `ChooseSelected`                | choose the selected item                                                                           | `enter`            |
 | `RefreshPlayback`               | manually refresh the current playback                                                              | `r`                |
+| `RefreshLibrary`                | re-download the user's library (playlists, followed artists, saved albums/shows, liked tracks)     | `g R`              |
 | `RestartIntegratedClient`       | restart the integrated client (`streaming` feature only)                                           | `R`                |
 | `ShowActionsOnSelectedItem`     | open a popup showing actions on a selected item                                                    | `g a`, `C-space`   |
 | `ShowActionsOnCurrentTrack`     | open a popup showing actions on the current track                                                  | `a`                |
@@ -594,6 +597,10 @@ See [configuration documentation](https://github.com/aome510/spotify-player/blob
 ## Caches
 
 By default, cache files are stored in `$HOME/.cache/spotify-player` (logs, credentials, audio cache, etc.). Change this with `-C <FOLDER_PATH>` or `--cache-folder <FOLDER_PATH>`.
+
+### Library cache
+
+Your library (playlists, followed artists, saved albums and shows, liked tracks) is saved in `*_cache.json` files. When a saved copy exists, startup and the library pages use it instead of re-downloading from Spotify, which keeps large libraries from using up the [API quota](#client-id-and-rate-limits) on every launch. Changes made in `spotify_player` update the saved copy; to pick up changes made in other Spotify apps, run `RefreshLibrary` (`g R`). Delete the cache files to force a full download on the next launch.
 
 ### Logging
 

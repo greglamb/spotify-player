@@ -145,7 +145,7 @@ pub struct Track {
     pub album: Option<Album>,
     pub duration: std::time::Duration,
     pub explicit: bool,
-    #[serde(skip)]
+    #[serde(default)]
     pub added_at: u64,
 }
 
@@ -409,6 +409,11 @@ impl Track {
     /// tries to convert from a `rspotify::model::FullTrack` into `Track`
     pub fn try_from_full_track(track: rspotify::model::FullTrack) -> Option<Self> {
         Track::try_from_full_track_with_date(track, None)
+    }
+
+    /// tries to convert from a `rspotify::model::SavedTrack` into `Track`, keeping its liked date
+    pub fn try_from_saved_track(saved: rspotify::model::SavedTrack) -> Option<Self> {
+        Track::try_from_full_track_with_date(saved.track, Some(saved.added_at))
     }
 
     /// tries to convert from a `rspotify::model::PlaylistItem` into `Track`

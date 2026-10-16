@@ -30,6 +30,8 @@ pub enum ClientRequest {
     GetUserSavedAlbums,
     GetUserSavedShows,
     GetUserFollowedArtists,
+    /// Re-download the user's library, even if a copy is already loaded
+    RefreshUserLibrary,
     GetContext(ContextId),
     GetCurrentPlayback,
     Search(String),

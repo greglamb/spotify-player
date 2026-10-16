@@ -1,5 +1,8 @@
 use std::io::{BufReader, BufWriter};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::LazyLock;
@@ -12,7 +15,7 @@ use super::Lyrics;
 
 pub type DataReadGuard<'a> = parking_lot::RwLockReadGuard<'a, AppData>;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum FileCacheKey {
     Playlists,
     PlaylistFolders,
@@ -43,6 +46,9 @@ pub struct UserData {
     pub saved_shows: Vec<Show>,
     pub saved_albums: Vec<Album>,
     pub saved_tracks: HashMap<String, Track>,
+    /// Library collections already loaded from a file cache or Spotify, which are only
+    /// re-downloaded on an explicit refresh.
+    pub loaded: HashSet<FileCacheKey>,
 }
 
 #[derive(Debug)]
@@ -163,26 +169,89 @@ impl AppData {
 impl UserData {
     /// Construct a new user data based on file caches
     pub fn new_from_file_caches(cache_folder: &Path) -> Self {
+        fn load<T: DeserializeOwned>(
+            key: FileCacheKey,
+            cache_folder: &Path,
+            loaded: &mut HashSet<FileCacheKey>,
+        ) -> Option<T> {
+            let data = load_data_from_file_cache(key, cache_folder);
+            if data.is_some() {
+                loaded.insert(key);
+            }
+            data
+        }
+
+        let mut loaded = HashSet::new();
+        let playlists =
+            load(FileCacheKey::Playlists, cache_folder, &mut loaded).unwrap_or_default();
+        let playlist_folder_node = load(FileCacheKey::PlaylistFolders, cache_folder, &mut loaded);
+        let followed_artists =
+            load(FileCacheKey::FollowedArtists, cache_folder, &mut loaded).unwrap_or_default();
+        let saved_shows =
+            load(FileCacheKey::SavedShows, cache_folder, &mut loaded).unwrap_or_default();
+        let saved_albums =
+            load(FileCacheKey::SavedAlbums, cache_folder, &mut loaded).unwrap_or_default();
+        let saved_tracks: HashMap<String, Track> =
+            load(FileCacheKey::SavedTracks, cache_folder, &mut loaded).unwrap_or_default();
+
+        // caches written before liked dates were stored cannot order the liked tracks,
+        // so they are re-downloaded once
+        if saved_tracks.values().any(|track| track.added_at == 0) {
+            loaded.remove(&FileCacheKey::SavedTracks);
+        }
+
         Self {
             user: None,
-            playlists: load_data_from_file_cache(FileCacheKey::Playlists, cache_folder)
-                .unwrap_or_default(),
-            playlist_folder_node: load_data_from_file_cache(
-                FileCacheKey::PlaylistFolders,
-                cache_folder,
-            ),
-            followed_artists: load_data_from_file_cache(
-                FileCacheKey::FollowedArtists,
-                cache_folder,
-            )
-            .unwrap_or_default(),
-            saved_shows: load_data_from_file_cache(FileCacheKey::SavedShows, cache_folder)
-                .unwrap_or_default(),
-            saved_albums: load_data_from_file_cache(FileCacheKey::SavedAlbums, cache_folder)
-                .unwrap_or_default(),
-            saved_tracks: load_data_from_file_cache(FileCacheKey::SavedTracks, cache_folder)
-                .unwrap_or_default(),
+            playlists,
+            playlist_folder_node,
+            followed_artists,
+            saved_shows,
+            saved_albums,
+            saved_tracks,
+            loaded,
         }
+    }
+
+    pub fn is_loaded(&self, key: FileCacheKey) -> bool {
+        self.loaded.contains(&key)
+    }
+
+    /// Persist the in-memory copy of a library collection into its file cache.
+    pub fn store_into_file_cache(
+        &self,
+        key: FileCacheKey,
+        cache_folder: &Path,
+    ) -> std::io::Result<()> {
+        match key {
+            FileCacheKey::Playlists => {
+                store_data_into_file_cache(key, cache_folder, &self.playlists)
+            }
+            // playlist folders are generated outside the app and never changed by it
+            FileCacheKey::PlaylistFolders => Ok(()),
+            FileCacheKey::FollowedArtists => {
+                store_data_into_file_cache(key, cache_folder, &self.followed_artists)
+            }
+            FileCacheKey::SavedShows => {
+                store_data_into_file_cache(key, cache_folder, &self.saved_shows)
+            }
+            FileCacheKey::SavedAlbums => {
+                store_data_into_file_cache(key, cache_folder, &self.saved_albums)
+            }
+            FileCacheKey::SavedTracks => {
+                store_data_into_file_cache(key, cache_folder, &self.saved_tracks)
+            }
+        }
+    }
+
+    /// Get the user's liked tracks, most recently liked first (the order Spotify returns them in)
+    pub fn liked_tracks(&self) -> Vec<Track> {
+        let mut tracks: Vec<Track> = self.saved_tracks.values().cloned().collect();
+        tracks.sort_by(|x, y| {
+            y.added_at
+                .cmp(&x.added_at)
+                .then_with(|| x.id.uri().cmp(&y.id.uri()))
+        });
+        tracks
     }
 
     /// Get a list of playlist items that are **possibly** modifiable by user
@@ -288,7 +357,112 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryCaches, SearchCacheEntry, SearchResults};
+    use super::{
+        store_data_into_file_cache, FileCacheKey, Id, MemoryCaches, SearchCacheEntry,
+        SearchResults, Track, UserData,
+    };
+    use rspotify::model::TrackId;
+    use std::{collections::HashMap, path::PathBuf};
+
+    /// A cache folder unique to one test, removed when dropped.
+    struct TempCacheFolder(PathBuf);
+
+    impl TempCacheFolder {
+        fn new(name: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("spotify-player-{}-{name}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempCacheFolder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn track(id: &str, added_at: u64) -> Track {
+        Track {
+            id: TrackId::from_id(id).unwrap().into_static(),
+            name: id.to_string(),
+            artists: vec![],
+            album: None,
+            duration: std::time::Duration::from_secs(1),
+            explicit: false,
+            added_at,
+        }
+    }
+
+    fn tracks_by_uri(tracks: impl IntoIterator<Item = Track>) -> HashMap<String, Track> {
+        tracks.into_iter().map(|t| (t.id.uri(), t)).collect()
+    }
+
+    #[test]
+    fn only_cached_collections_are_loaded() {
+        let folder = TempCacheFolder::new("only-cached");
+        store_data_into_file_cache(FileCacheKey::SavedAlbums, &folder.0, &Vec::<()>::new())
+            .unwrap();
+        store_data_into_file_cache(
+            FileCacheKey::SavedTracks,
+            &folder.0,
+            &tracks_by_uri([track("a", 1)]),
+        )
+        .unwrap();
+
+        let user_data = UserData::new_from_file_caches(&folder.0);
+
+        assert!(user_data.is_loaded(FileCacheKey::SavedAlbums));
+        assert!(user_data.is_loaded(FileCacheKey::SavedTracks));
+        assert!(!user_data.is_loaded(FileCacheKey::Playlists));
+        assert!(!user_data.is_loaded(FileCacheKey::FollowedArtists));
+    }
+
+    #[test]
+    fn saved_tracks_cache_without_liked_dates_is_not_loaded() {
+        let folder = TempCacheFolder::new("no-liked-dates");
+        store_data_into_file_cache(
+            FileCacheKey::SavedTracks,
+            &folder.0,
+            &tracks_by_uri([track("a", 1), track("b", 0)]),
+        )
+        .unwrap();
+
+        let user_data = UserData::new_from_file_caches(&folder.0);
+
+        assert_eq!(user_data.saved_tracks.len(), 2);
+        assert!(!user_data.is_loaded(FileCacheKey::SavedTracks));
+    }
+
+    #[test]
+    fn stored_saved_tracks_keep_liked_dates() {
+        let folder = TempCacheFolder::new("store-liked-dates");
+        let mut user_data = UserData::new_from_file_caches(&folder.0);
+        user_data.saved_tracks = tracks_by_uri([track("a", 42)]);
+        user_data
+            .store_into_file_cache(FileCacheKey::SavedTracks, &folder.0)
+            .unwrap();
+
+        let reloaded = UserData::new_from_file_caches(&folder.0);
+
+        assert!(reloaded.is_loaded(FileCacheKey::SavedTracks));
+        assert_eq!(reloaded.liked_tracks()[0].added_at, 42);
+    }
+
+    #[test]
+    fn liked_tracks_are_ordered_most_recent_first() {
+        let folder = TempCacheFolder::new("liked-order");
+        let mut user_data = UserData::new_from_file_caches(&folder.0);
+        user_data.saved_tracks = tracks_by_uri([track("old", 1), track("new", 3), track("mid", 2)]);
+
+        let names: Vec<String> = user_data
+            .liked_tracks()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+
+        assert_eq!(names, ["new", "mid", "old"]);
+    }
 
     #[test]
     fn search_lifecycle_suppresses_duplicate_requests() {
