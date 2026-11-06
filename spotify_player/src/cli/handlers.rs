@@ -212,6 +212,14 @@ pub fn handle_cli_subcommand(cmd: &str, args: &ArgMatches) -> Result<()> {
         _ => {}
     }
 
+    // only the subcommands that reach Spotify are worth a log
+    if let Some(log_folder) = &configs.app_config.log_folder {
+        // a broken log file must not stop the command the user actually asked for
+        if let Err(err) = crate::init_cli_logging(log_folder) {
+            eprintln!("Failed to initialize the CLI log: {err:#}");
+        }
+    }
+
     let socket = UdpSocket::bind("127.0.0.1:0")?;
     try_connect_to_client(&socket, configs).context("try to connect to a client")?;
 

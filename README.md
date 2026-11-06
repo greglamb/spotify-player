@@ -623,7 +623,9 @@ Playlists are listed with the ones played most recently first, in the library an
 
 ### Logging
 
-Logs are stored in `$APP_CACHE_FOLDER/spotify-player-*.log`. For debugging or issues, check the backtrace file in `$APP_CACHE_FOLDER/spotify-player-*.backtrace`.
+Logs are stored in `$APP_CACHE_FOLDER/spotify-player-*.log`, one file per run of the application. For debugging or issues, check the backtrace file in `$APP_CACHE_FOLDER/spotify-player-*.backtrace`.
+
+A CLI subcommand appends to `$APP_CACHE_FOLDER/spotify-player-cli.log` instead, since it has no logs page or alert popup to report a failure. A subcommand run while the application is not running serves itself, so that file is where its requests, and the client ID that served them, are recorded. Delete it when it grows, or set `RUST_LOG=warn` to keep only the failures.
 
 Set the `RUST_LOG` environment variable to control [logging level](https://docs.rs/log/0.4.14/log/enum.Level.html). Default is `spotify_player=INFO`.
 

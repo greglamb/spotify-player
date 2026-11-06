@@ -24,22 +24,13 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::config::apply_config_override;
 
-fn init_logging(
-    log_folder: &std::path::Path,
-    log_buffer: Arc<Mutex<VecDeque<String>>>,
-    alerts: Arc<Mutex<state::AlertQueue>>,
-) -> Result<()> {
+/// Prepare the log folder and the `RUST_LOG` filter, reporting whether logging is on at all.
+fn prepare_logging(log_folder: &std::path::Path) -> Result<bool> {
     if std::env::var_os("RUST_LOG").is_some_and(|x| x == "off") {
         // Don't create log files if logging is disabled.
-        return Ok(());
+        return Ok(false);
     }
 
-    let log_prefix = format!(
-        "spotify-player-{}",
-        chrono::Local::now().format("%y-%m-%d-%H-%M")
-    );
-
-    // initialize the application's logging
     if std::env::var("RUST_LOG").is_err() {
         // default to log the current crate and librespot crates
         std::env::set_var("RUST_LOG", "spotify_player=info,librespot=info");
@@ -47,6 +38,49 @@ fn init_logging(
     if !log_folder.exists() {
         std::fs::create_dir_all(log_folder)?;
     }
+    Ok(true)
+}
+
+/// Write a CLI subcommand's log to a file of its own.
+///
+/// A subcommand has no logs page and no alert popup to carry a failure, so without this a
+/// request it made, and the client ID that served it, leaves no trace at all.
+pub fn init_cli_logging(log_folder: &std::path::Path) -> Result<()> {
+    if !prepare_logging(log_folder)? {
+        return Ok(());
+    }
+
+    // appended to, not created per run: a subcommand is short and may run many times a minute
+    let log_file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(log_folder.join("spotify-player-cli.log"))
+        .context("failed to open the CLI log file")?;
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(log_file)),
+        )
+        .init();
+    Ok(())
+}
+
+fn init_logging(
+    log_folder: &std::path::Path,
+    log_buffer: Arc<Mutex<VecDeque<String>>>,
+    alerts: Arc<Mutex<state::AlertQueue>>,
+) -> Result<()> {
+    if !prepare_logging(log_folder)? {
+        return Ok(());
+    }
+
+    let log_prefix = format!(
+        "spotify-player-{}",
+        chrono::Local::now().format("%y-%m-%d-%H-%M")
+    );
     let log_file = std::fs::File::create(log_folder.join(format!("{log_prefix}.log")))
         .context("failed to create log file")?;
 
