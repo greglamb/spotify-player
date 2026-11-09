@@ -343,7 +343,7 @@ impl WebApiClient {
     {
         let Some(fallback) = &self.fallback else {
             let result = request(&self.primary).await;
-            if Self::is_rate_limited(&result) {
+            if result.as_ref().err().is_some_and(Self::is_rate_limited) {
                 Self::warn_rate_limited(method, url, "ncspot", &ONE_CLIENT_RATE_LIMIT_HINT);
             }
             return result;
@@ -389,6 +389,13 @@ impl WebApiClient {
         let Some(status) = Self::fallback_status(&error) else {
             return Err(error);
         };
+        // a `404` on a mutation means the device or the resource is not there at all, which
+        // another client ID cannot change; a `404` on a GET can mean the endpoint is one this
+        // client ID may not read, which it can
+        if status == reqwest::StatusCode::NOT_FOUND && method != "GET" {
+            return Err(error);
+        }
+
         let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
         let clients = format!("{} and {}", first.name, second.name);
 
@@ -419,20 +426,28 @@ impl WebApiClient {
             first.name,
             second.name
         );
-        let result = request(second.client).await;
-        if result.is_err() && (rate_limited || Self::is_rate_limited(&result)) {
-            Self::warn_rate_limited(method, url, &clients, BOTH_CLIENTS_RATE_LIMIT_HINT);
+        let fallback_error = match request(second.client).await {
+            Err(fallback_error) => fallback_error,
+            result => return result,
+        };
+
+        if !Self::is_rate_limited(&fallback_error) {
+            return Err(fallback_error);
         }
-        result
+        if !rate_limited {
+            // the first client's answer is what explains the failure; the fallback's `429` is
+            // an artifact of the retry and would only mislead
+            return Err(error);
+        }
+
+        // every attempt was rate limited, which is the one case the user can act on
+        Self::warn_rate_limited(method, url, &clients, BOTH_CLIENTS_RATE_LIMIT_HINT);
+        Err(fallback_error)
     }
 
     /// Whether a failed request was rejected with `429 Too Many Requests`.
-    fn is_rate_limited(result: &ClientResult<String>) -> bool {
-        result
-            .as_ref()
-            .err()
-            .and_then(Self::fallback_status)
-            .is_some_and(|status| status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+    fn is_rate_limited(error: &ClientError) -> bool {
+        Self::fallback_status(error) == Some(reqwest::StatusCode::TOO_MANY_REQUESTS)
     }
 
     /// Warn that a rate-limited request has no client ID left to serve it.
@@ -762,6 +777,56 @@ mod tests {
             "{:?}",
             alert.fields
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_mutation_is_not_retried_through_the_other_client() {
+        let primary_server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&primary_server)
+            .await;
+        let fallback_server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "24"))
+            .expect(0)
+            .mount(&fallback_server)
+            .await;
+        let (client, ..) = rate_limit_aware_client(&primary_server, &fallback_server, 0).await;
+
+        let error = client
+            .api_put("me/player/play", &serde_json::json!({}))
+            .await
+            .expect_err("the request fails");
+
+        // a `404` on a play command means no device is active, which the other client ID
+        // cannot change, so the user sees that instead of a `429` from a needless retry
+        assert!(error.to_string().contains("404"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn the_first_clients_error_survives_a_rate_limited_fallback() {
+        let primary_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&primary_server)
+            .await;
+        let fallback_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "24"))
+            .expect(1)
+            .mount(&fallback_server)
+            .await;
+        let (client, ..) = rate_limit_aware_client(&primary_server, &fallback_server, 0).await;
+
+        let error = client
+            .api_get("me/tracks", &Query::new())
+            .await
+            .expect_err("the request fails");
+
+        assert!(error.to_string().contains("403"), "{error}");
     }
 
     #[tokio::test]

@@ -414,7 +414,14 @@ impl AppClient {
                     playback.shuffle_state = shuffle;
                 }
                 let device_id = playback.as_ref().and_then(|p| p.device_id.as_deref());
-                self.start_playback(p, device_id).await?;
+                // Spotify answers a play command with `404` when no device is active, which is
+                // worth saying plainly: it is the usual reason a CLI playback command does
+                // nothing
+                self.start_playback(p, device_id).await.context(if playback.is_none() {
+                    "no device is active; start the application, or connect one with `spotify_player connect`"
+                } else {
+                    "failed to start the playback"
+                })?;
                 // For some reasons, when starting a new playback, the integrated `spotify_player`
                 // client doesn't respect the initial shuffle state, so we need to manually update the state
                 if let Some(ref playback) = playback {
