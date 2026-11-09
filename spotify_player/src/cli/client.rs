@@ -344,7 +344,7 @@ async fn handle_search_request(client: &AppClient, query: String) -> Result<Vec<
     Ok(serde_json::to_vec(&search_result)?)
 }
 
-async fn handle_playback_request(
+pub async fn handle_playback_request(
     client: &AppClient,
     state: Option<&SharedState>,
     command: Command,

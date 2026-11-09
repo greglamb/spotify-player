@@ -116,8 +116,14 @@ fn init_logging(
     Ok(())
 }
 
+/// How long to wait for a device before playing what `--play` named.
+const PLAY_ON_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 #[tokio::main]
-async fn start_app(state: &state::SharedState) -> Result<()> {
+async fn start_app(
+    state: &state::SharedState,
+    play: Option<(cli::ContextType, cli::IdOrName)>,
+) -> Result<()> {
     // client channels
     let (client_pub, client_sub) = flume::unbounded::<client::ClientRequest>();
 
@@ -172,6 +178,32 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
     )))?;
     client_pub.send(client::ClientRequest::GetUserSavedShows)?;
     client_pub.send(client::ClientRequest::GetRecentPlaylistPlays)?;
+
+    // play what `--play` named, once the application has connected to a device: Spotify
+    // answers a play command with `404` until one is there
+    if let Some((context_type, id_or_name)) = play {
+        tokio::task::spawn({
+            let client = client.clone();
+            let state = state.clone();
+            async move {
+                let deadline = std::time::Instant::now() + PLAY_ON_STARTUP_TIMEOUT;
+                while std::time::Instant::now() < deadline && state.player.read().playback.is_none()
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+
+                let command = cli::Command::StartContext {
+                    context_type,
+                    id_or_name,
+                    shuffle: false,
+                };
+                if let Err(err) = cli::handle_playback_request(&client, Some(&state), command).await
+                {
+                    tracing::error!("Failed to play what `--play` asked for: {err:#}");
+                }
+            }
+        });
+    }
 
     // client socket task (for handling CLI commands)
     tokio::task::spawn({
@@ -368,7 +400,10 @@ fn main() -> Result<()> {
             }
 
             let state = std::sync::Arc::new(state::State::new(is_daemon, log_buffer, alerts));
-            start_app(&state)
+            let play = args
+                .get_one::<String>("play")
+                .map(|target| cli::parse_play_target(target));
+            start_app(&state, play)
         }
         Some((cmd, args)) => cli::handle_cli_subcommand(cmd, args),
     }

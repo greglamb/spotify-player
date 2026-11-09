@@ -445,6 +445,20 @@ Run as a daemon with `-d` or `--daemon`: `spotify_player -d`.
 
 To enable [fuzzy search](https://en.wikipedia.org/wiki/Approximate_string_matching), build with the `fzf` feature (disabled by default).
 
+### Playing something at startup
+
+`--play` starts the application and plays a context as soon as it has a device to play it on:
+
+```shell
+spotify_player --play "Code Caper"                                  # a playlist by name
+spotify_player --play spotify:playlist:4MOWlyL7zyp03rsJHCmsGu       # a URI
+spotify_player --play https://open.spotify.com/album/1Jvm2mBFKFmXVaOnZzxuw8  # a link
+```
+
+A URI or a link can name a playlist, an album or an artist; anything else is taken as a playlist name and searched for. The application waits up to 15 seconds for a device, since Spotify answers a play command with `404 Not Found` while none is active.
+
+This is not the same as `spotify_player playback start context`, which acts on an application that is already running.
+
 ### CLI Commands
 
 `spotify_player` provides several CLI commands for interacting with Spotify:

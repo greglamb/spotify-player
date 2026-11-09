@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_REQUEST_SIZE: usize = 4096;
 
-pub use client::start_socket;
+pub use client::{handle_playback_request, start_socket};
 pub use handlers::handle_cli_subcommand;
 
 #[derive(Debug, Serialize, Deserialize, clap::ValueEnum, Clone)]
@@ -56,6 +56,35 @@ pub enum GetRequest {
 pub enum IdOrName {
     Id(String),
     Name(String),
+}
+
+/// What the `--play` option names: a Spotify URI or link, or else a playlist by name.
+///
+/// A URI or a link names the kind of context itself. Anything else is taken as a playlist
+/// name, the form people know by heart.
+pub fn parse_play_target(value: &str) -> (ContextType, IdOrName) {
+    let value = value.trim();
+    let uri = crate::utils::parse_uri(value);
+
+    for (kind, context_type) in [
+        ("playlist", ContextType::Playlist),
+        ("album", ContextType::Album),
+        ("artist", ContextType::Artist),
+    ] {
+        for prefix in [
+            format!("spotify:{kind}:"),
+            format!("https://open.spotify.com/{kind}/"),
+        ] {
+            let Some(rest) = uri.strip_prefix(&prefix) else {
+                continue;
+            };
+            // a link carries a query string, and sometimes a trailing path
+            let id = rest.split(['?', '/']).next().unwrap_or(rest);
+            return (context_type, IdOrName::Id(id.to_string()));
+        }
+    }
+
+    (ContextType::Playlist, IdOrName::Name(value.to_string()))
 }
 
 #[derive(Debug, Serialize, Deserialize, clap::ValueEnum, Clone, Copy)]
@@ -189,6 +218,15 @@ pub fn init_cli() -> anyhow::Result<clap::Command> {
         .subcommand(commands::init_print_features_command())
         .subcommand(commands::init_lyrics_command())
         .arg(
+            clap::Arg::new("play")
+                .long("play")
+                .value_name("CONTEXT")
+                .help(
+                    "Start playing a playlist by name, or the playlist, album or artist a \
+                     Spotify URI or link names, once the application has a device",
+                ),
+        )
+        .arg(
             clap::Arg::new("theme")
                 .short('t')
                 .long("theme")
@@ -230,4 +268,32 @@ pub fn init_cli() -> anyhow::Result<clap::Command> {
     );
 
     Ok(cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_play_target, ContextType, IdOrName};
+
+    #[test]
+    fn what_to_play_comes_from_a_uri_a_link_or_a_name() {
+        let id = "4MOWlyL7zyp03rsJHCmsGu";
+
+        assert!(matches!(
+            parse_play_target(&format!("spotify:playlist:{id}")),
+            (ContextType::Playlist, IdOrName::Id(parsed)) if parsed == id
+        ));
+        assert!(matches!(
+            parse_play_target(&format!("https://open.spotify.com/album/{id}?si=abc")),
+            (ContextType::Album, IdOrName::Id(parsed)) if parsed == id
+        ));
+        // the user form of a playlist URI, which `parse_uri` normalizes
+        assert!(matches!(
+            parse_play_target(&format!("spotify:user:someone:playlist:{id}")),
+            (ContextType::Playlist, IdOrName::Id(parsed)) if parsed == id
+        ));
+        assert!(matches!(
+            parse_play_target("  Code Caper  "),
+            (ContextType::Playlist, IdOrName::Name(name)) if name == "Code Caper"
+        ));
+    }
 }
