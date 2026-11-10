@@ -200,7 +200,16 @@ async fn start_app(
                 if let Err(err) = cli::handle_playback_request(&client, Some(&state), command).await
                 {
                     tracing::error!("Failed to play what `--play` asked for: {err:#}");
+                    return;
                 }
+
+                // the page of the playing context, rather than the context itself: it needs no
+                // id of its own and follows the playback once Spotify reports it
+                state.ui.lock().new_page(state::PageState::Context {
+                    id: None,
+                    context_page_type: state::ContextPageType::CurrentPlaying,
+                    state: None,
+                });
             }
         });
     }

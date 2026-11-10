@@ -222,8 +222,8 @@ pub fn init_cli() -> anyhow::Result<clap::Command> {
                 .long("play")
                 .value_name("CONTEXT")
                 .help(
-                    "Start playing a playlist by name, or the playlist, album or artist a \
-                     Spotify URI or link names, once the application has a device",
+                    "Play a playlist by name, or the playlist, album or artist a Spotify URI \
+                     or link names, once the application has a device, and open its page",
                 ),
         )
         .arg(

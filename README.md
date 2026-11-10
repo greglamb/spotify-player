@@ -455,7 +455,7 @@ spotify_player --play spotify:playlist:4MOWlyL7zyp03rsJHCmsGu       # a URI
 spotify_player --play https://open.spotify.com/album/1Jvm2mBFKFmXVaOnZzxuw8  # a link
 ```
 
-A URI or a link can name a playlist, an album or an artist; anything else is taken as a playlist name and searched for. The application waits up to 15 seconds for a device, since Spotify answers a play command with `404 Not Found` while none is active.
+A URI or a link can name a playlist, an album or an artist; anything else is taken as a playlist name and searched for. The application opens the page of what it starts, rather than leaving you on the library page, and waits up to 15 seconds for a device, since Spotify answers a play command with `404 Not Found` while none is active.
 
 This is not the same as `spotify_player playback start context`, which acts on an application that is already running.
 
